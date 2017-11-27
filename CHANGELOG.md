@@ -22,6 +22,11 @@ at anytime.
   * Fixed handling decryption error for blobs encrypted with an invalid key
   * Fixed handling stream with no data blob (https://github.com/lbryio/lbry/issues/905)
   * Fixed fetching the external ip
+  * Merged two sepereate dht test folders into one
+  * Fixed minor typ0s
+  * Fixed UPnP setup to avoid race conditions
+  * Fixed port sanity check
+  *
 
 ### Deprecated
   * `channel_list_mine`, replaced with `channel_list`
@@ -40,6 +45,8 @@ at anytime.
   * Remove manual saving of the wallet in from lbrynet, let lbryum handle it
   * Block wallet startup on being unlocked if it is encrypted
   * Use reworked lbryum payto command
+  * Changed `file_list`, `file_delete`, `file_set_status`, and `file_reflect` to no longer return claim related information.
+  * Changed UPnP logic to check for available external port. Use addanyportmapping() now, unless user has specified port in config
 
 ### Added
   * Add link to instructions on how to change the default peer port
@@ -70,6 +77,9 @@ at anytime.
   * Added support for wallet encryption via new commands `wallet_decrypt` and `wallet_encrypt`
   * Added `blob_availability` and `stream_availability` commands for debugging download issues
   * Changed config file format of `known_dht_nodes`, `lbryum_servers`, and `reflector_servers` to lists of `hostname:port` strings
+  * Added `external_peer_port` field to Session
+  * Added `external_dht_node_port` field to Session
+  * Added method to check if a config value is user specified or not
 
 ### Removed
   * Removed claim related filter arguments `name`, `claim_id`, and `outpoint` from `file_list`, `file_delete`, `file_set_status`, and `file_reflect`
