@@ -8,7 +8,7 @@ import unittest
 
 from lbrynet.dht.msgtypes import RequestMessage, ResponseMessage, ErrorMessage
 from lbrynet.dht.msgformat import MessageTranslator, DefaultFormat
-from lbrynet.conf import COMPAT_VERSION
+from lbrynet.dht.constants import COMPAT_VERSION
 
 
 class DefaultFormatTranslatorTest(unittest.TestCase):

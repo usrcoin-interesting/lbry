@@ -15,6 +15,9 @@ constants, and do not affect general Kademlia operation.
 
 ######### KADEMLIA CONSTANTS ###########
 
+# Compatibility Version of the wire protocol. Increasing this will break backward compatibility
+COMPAT_VERSION = 1
+
 #: Small number Representing the degree of parallelism in network calls
 alpha = 3
 
