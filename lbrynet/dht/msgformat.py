@@ -49,7 +49,8 @@ class DefaultFormat(MessageTranslator):
 
     def fromPrimitive(self, msgPrimitive):
         if msgPrimitive[self.headerCompVer] != COMPAT_VERSION:
-            return
+            raise Exception('Received packet with comapt version %d, expected %d' %
+                            (msgPrimitive[self.headerCompVer], COMPAT_VERSION))
 
         msgType = msgPrimitive[self.headerType]
         ip = ".".join([str(d) for d in msgPrimitive[self.headerNodeIP][:4]])
