@@ -1,11 +1,10 @@
+import os
 import binascii
 import logging
-from lbrynet.core.cryptoutils import get_lbry_hash_obj
-from lbrynet.cryptstream.CryptBlob import CryptBlobInfo
 from twisted.internet import defer, threads
-from lbrynet.core.Error import DuplicateStreamHashError, InvalidStreamDescriptorError
+from lbrynet.core.cryptoutils import get_lbry_hash_obj
+from lbrynet.core.Error import InvalidStreamDescriptorError
 from lbrynet.core.StreamDescriptor import PlainStreamDescriptorWriter, BlobStreamDescriptorWriter
-import os
 
 
 log = logging.getLogger(__name__)
@@ -14,39 +13,31 @@ log = logging.getLogger(__name__)
 EncryptedFileStreamType = "lbryfile"
 
 
-def save_sd_info(stream_info_manager, sd_info, ignore_duplicate=False):
-    log.debug("Saving info for %s", str(sd_info['stream_name']))
-    hex_stream_name = sd_info['stream_name']
-    key = sd_info['key']
-    stream_hash = sd_info['stream_hash']
-    raw_blobs = sd_info['blobs']
-    suggested_file_name = sd_info['suggested_file_name']
-    crypt_blobs = []
-    for blob in raw_blobs:
-        length = blob['length']
-        if length != 0:
-            blob_hash = blob['blob_hash']
-        else:
-            blob_hash = None
-        blob_num = blob['blob_num']
-        iv = blob['iv']
-        crypt_blobs.append(CryptBlobInfo(blob_hash, blob_num, length, iv))
-    log.debug("Trying to save stream info for %s", str(hex_stream_name))
-    d = stream_info_manager.save_stream(stream_hash, hex_stream_name, key,
-                                        suggested_file_name, crypt_blobs)
+@defer.inlineCallbacks
+def save_sd_info(blob_manager, sd_hash, sd_info):
+    if not blob_manager.blobs.get(sd_hash) or not blob_manager.blobs[sd_hash].get_is_verified():
+        descriptor_writer = BlobStreamDescriptorWriter(blob_manager)
+        calculated_sd_hash = yield descriptor_writer.create_descriptor(sd_info)
+        if calculated_sd_hash != sd_hash:
+            raise InvalidStreamDescriptorError("%s does not match calculated %s" %
+                                               (sd_hash, calculated_sd_hash))
+    stream_hash = yield blob_manager.storage.get_stream_hash_for_sd_hash(sd_hash)
+    if not stream_hash:
+        log.info("Saving info for %s", str(sd_info['stream_name']))
+        stream_name = sd_info['stream_name']
+        key = sd_info['key']
+        stream_hash = sd_info['stream_hash']
+        stream_blobs = sd_info['blobs']
+        suggested_file_name = sd_info['suggested_file_name']
+        yield blob_manager.storage.add_known_blobs(stream_blobs)
+        yield blob_manager.storage.store_stream(stream_hash, sd_hash, stream_name, key,
+                                                suggested_file_name, stream_blobs)
 
-    def check_if_duplicate(err):
-        if ignore_duplicate is True:
-            err.trap(DuplicateStreamHashError)
-
-    d.addErrback(check_if_duplicate)
-
-    d.addCallback(lambda _: stream_hash)
-    return d
+    defer.returnValue(stream_hash)
 
 
-def get_sd_info(stream_info_manager, stream_hash, include_blobs):
-    d = stream_info_manager.get_stream_info(stream_hash)
+def get_sd_info(storage, stream_hash, include_blobs):
+    d = storage.get_stream_info(stream_hash)
 
     def format_info(stream_info):
         fields = {}
@@ -58,19 +49,19 @@ def get_sd_info(stream_info_manager, stream_hash, include_blobs):
 
         def format_blobs(blobs):
             formatted_blobs = []
-            for blob_hash, blob_num, iv, length in blobs:
+            for blob_info in blobs:
                 blob = {}
-                if length != 0:
-                    blob['blob_hash'] = blob_hash
-                blob['blob_num'] = blob_num
-                blob['iv'] = iv
-                blob['length'] = length
+                if blob_info.length != 0:
+                    blob['blob_hash'] = str(blob_info.blob_hash)
+                blob['blob_num'] = blob_info.blob_num
+                blob['iv'] = str(blob_info.iv)
+                blob['length'] = blob_info.length
                 formatted_blobs.append(blob)
             fields['blobs'] = formatted_blobs
             return fields
 
         if include_blobs is True:
-            d = stream_info_manager.get_blobs_for_stream(stream_hash)
+            d = storage.get_blobs_for_stream(stream_hash)
         else:
             d = defer.succeed([])
         d.addCallback(format_blobs)
@@ -80,16 +71,7 @@ def get_sd_info(stream_info_manager, stream_hash, include_blobs):
     return d
 
 
-@defer.inlineCallbacks
-def publish_sd_blob(stream_info_manager, blob_manager, stream_hash):
-    descriptor_writer = BlobStreamDescriptorWriter(blob_manager)
-    sd_info = yield get_sd_info(stream_info_manager, stream_hash, True)
-    sd_blob_hash = yield descriptor_writer.create_descriptor(sd_info)
-    yield stream_info_manager.save_sd_blob_hash_to_stream(stream_hash, sd_blob_hash)
-    defer.returnValue(sd_blob_hash)
-
-
-def create_plain_sd(stream_info_manager, stream_hash, file_name, overwrite_existing=False):
+def create_plain_sd(storage, stream_hash, file_name, overwrite_existing=False):
 
     def _get_file_name():
         actual_file_name = file_name
@@ -107,7 +89,7 @@ def create_plain_sd(stream_info_manager, stream_hash, file_name, overwrite_exist
 
     def do_create(file_name):
         descriptor_writer = PlainStreamDescriptorWriter(file_name)
-        d = get_sd_info(stream_info_manager, stream_hash, True)
+        d = get_sd_info(storage, stream_hash, True)
         d.addCallback(descriptor_writer.create_descriptor)
         return d
 

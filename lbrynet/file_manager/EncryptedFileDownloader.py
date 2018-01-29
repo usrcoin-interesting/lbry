@@ -8,7 +8,6 @@ from twisted.internet import defer
 
 from lbrynet.core.client.StreamProgressManager import FullStreamProgressManager
 from lbrynet.core.utils import short_hash
-from lbrynet.core.StreamDescriptor import StreamMetadata
 from lbrynet.lbry_file.client.EncryptedFileDownloader import EncryptedFileSaver
 from lbrynet.lbry_file.client.EncryptedFileDownloader import EncryptedFileDownloader
 from lbrynet.file_manager.EncryptedFileStatusReport import EncryptedFileStatusReport
@@ -36,12 +35,12 @@ class ManagedEncryptedFileDownloader(EncryptedFileSaver):
     STATUS_FINISHED = "finished"
 
     def __init__(self, rowid, stream_hash, peer_finder, rate_limiter, blob_manager,
-                 stream_info_manager, lbry_file_manager, payment_rate_manager, wallet,
+                 storage, lbry_file_manager, payment_rate_manager, wallet,
                  download_directory, sd_hash=None, key=None, stream_name=None,
                  suggested_file_name=None):
         EncryptedFileSaver.__init__(self, stream_hash, peer_finder,
                                     rate_limiter, blob_manager,
-                                    stream_info_manager,
+                                    storage,
                                     payment_rate_manager, wallet,
                                     download_directory, key, stream_name, suggested_file_name)
         self.sd_hash = sd_hash
@@ -77,8 +76,8 @@ class ManagedEncryptedFileDownloader(EncryptedFileSaver):
 
     @defer.inlineCallbacks
     def status(self):
-        blobs = yield self.stream_info_manager.get_blobs_for_stream(self.stream_hash)
-        blob_hashes = [b[0] for b in blobs if b[0] is not None]
+        blobs = yield self.storage.get_blobs_for_stream(self.stream_hash)
+        blob_hashes = [b.blob_hash for b in blobs if b.blob_hash is not None]
         completed_blobs = yield self.blob_manager.completed_blobs(blob_hashes)
         num_blobs_completed = len(completed_blobs)
         num_blobs_known = len(blob_hashes)
@@ -140,11 +139,9 @@ class ManagedEncryptedFileDownloaderFactory(object):
     def make_downloader(self, metadata, options, payment_rate_manager, download_directory=None):
         assert len(options) == 1
         data_rate = options[0]
-        stream_hash = yield save_sd_info(self.lbry_file_manager.stream_info_manager,
+        stream_hash = yield save_sd_info(self.lbry_file_manager.session.blob_manager,
+                                         metadata.source_blob_hash,
                                          metadata.validator.raw_info)
-        if metadata.metadata_source == StreamMetadata.FROM_BLOB:
-            yield self.lbry_file_manager.save_sd_blob_hash_to_stream(stream_hash,
-                                                                     metadata.source_blob_hash)
         lbry_file = yield self.lbry_file_manager.add_lbry_file(stream_hash,
                                                                metadata.source_blob_hash,
                                                                payment_rate_manager,

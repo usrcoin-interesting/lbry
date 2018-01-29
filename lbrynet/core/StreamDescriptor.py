@@ -2,6 +2,7 @@ from collections import defaultdict
 import json
 import logging
 from twisted.internet import threads, defer
+
 from lbrynet.core.client.StandaloneBlobDownloader import StandaloneBlobDownloader
 from lbrynet.core.Error import UnknownStreamTypeError, InvalidStreamDescriptorError
 
@@ -87,7 +88,7 @@ class PlainStreamDescriptorWriter(StreamDescriptorWriter):
     def _write_stream_descriptor(self, raw_data):
 
         def write_file():
-            log.debug("Writing the sd file to disk")
+            log.info("Writing the sd file to disk")
             with open(self.sd_file_name, 'w') as sd_file:
                 sd_file.write(raw_data)
             return self.sd_file_name
@@ -98,7 +99,6 @@ class PlainStreamDescriptorWriter(StreamDescriptorWriter):
 class BlobStreamDescriptorWriter(StreamDescriptorWriter):
     def __init__(self, blob_manager):
         StreamDescriptorWriter.__init__(self)
-
         self.blob_manager = blob_manager
 
     @defer.inlineCallbacks
@@ -239,6 +239,7 @@ class StreamDescriptorIdentifier(object):
         return d
 
 
+@defer.inlineCallbacks
 def download_sd_blob(session, blob_hash, payment_rate_manager, timeout=None):
     """
     Downloads a single blob from the network
@@ -251,6 +252,11 @@ def download_sd_blob(session, blob_hash, payment_rate_manager, timeout=None):
 
     @return: An object of type HashBlob
     """
+
+    #TODO: this is to avoid a circular import - combine lbrynet.core.StreamDescriptor and
+    # lbrynet.lbry_file.StreamDescriptor
+    from lbrynet.lbry_file.StreamDescriptor import save_sd_info
+
     downloader = StandaloneBlobDownloader(blob_hash,
                                           session.blob_manager,
                                           session.peer_finder,
@@ -258,4 +264,10 @@ def download_sd_blob(session, blob_hash, payment_rate_manager, timeout=None):
                                           payment_rate_manager,
                                           session.wallet,
                                           timeout)
-    return downloader.download()
+    sd_blob = yield downloader.download()
+    sd_reader = BlobStreamDescriptorReader(sd_blob)
+    sd_info = yield sd_reader.get_info()
+    raw_sd = yield sd_reader._get_raw_data()
+    yield session.blob_manager.storage.add_known_blob(blob_hash, len(raw_sd))
+    yield save_sd_info(session.blob_manager, sd_blob.blob_hash, sd_info)
+    defer.returnValue(sd_blob)

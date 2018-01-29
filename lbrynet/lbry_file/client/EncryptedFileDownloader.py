@@ -5,7 +5,6 @@ from zope.interface import implements
 from lbrynet.lbry_file.StreamDescriptor import save_sd_info
 from lbrynet.cryptstream.client.CryptStreamDownloader import CryptStreamDownloader
 from lbrynet.core.client.StreamProgressManager import FullStreamProgressManager
-from lbrynet.core.StreamDescriptor import StreamMetadata
 from lbrynet.interfaces import IStreamDownloaderFactory
 from lbrynet.lbry_file.client.EncryptedFileMetadataHandler import EncryptedFileMetadataHandler
 import os
@@ -21,39 +20,22 @@ class EncryptedFileDownloader(CryptStreamDownloader):
     """Classes which inherit from this class download LBRY files"""
 
     def __init__(self, stream_hash, peer_finder, rate_limiter, blob_manager,
-                 stream_info_manager, payment_rate_manager, wallet, key, stream_name,
+                 storage, payment_rate_manager, wallet, key, stream_name,
                  suggested_file_name=None):
         CryptStreamDownloader.__init__(self, peer_finder, rate_limiter, blob_manager,
                                        payment_rate_manager, wallet, key, stream_name)
         self.stream_hash = stream_hash
-        self.stream_info_manager = stream_info_manager
+        self.storage = storage
         self.suggested_file_name = binascii.unhexlify(suggested_file_name)
         self._calculated_total_bytes = None
 
+    @defer.inlineCallbacks
     def delete_data(self):
-        d1 = self.stream_info_manager.get_blobs_for_stream(self.stream_hash)
-
-        def get_blob_hashes(blob_infos):
-            return [b[0] for b in blob_infos if b[0] is not None]
-
-        d1.addCallback(get_blob_hashes)
-        d2 = self.stream_info_manager.get_sd_blob_hashes_for_stream(self.stream_hash)
-
-        def combine_blob_hashes(results):
-            blob_hashes = []
-            for success, result in results:
-                if success is True:
-                    blob_hashes.extend(result)
-            return blob_hashes
-
-        def delete_blobs(blob_hashes):
-            self.blob_manager.delete_blobs(blob_hashes)
-            return True
-
-        dl = defer.DeferredList([d1, d2], fireOnOneErrback=True)
-        dl.addCallback(combine_blob_hashes)
-        dl.addCallback(delete_blobs)
-        return dl
+        crypt_infos = yield self.storage.get_blobs_for_stream(self.stream_hash)
+        blob_hashes = [b.blob_hash for b in crypt_infos]
+        sd_hash = yield self.storage.get_sd_blob_hash_for_stream(self.stream_hash)
+        blob_hashes.append(sd_hash)
+        yield self.blob_manager.delete_blobs(blob_hashes)
 
     def stop(self, err=None):
         d = self._close_output()
@@ -76,10 +58,10 @@ class EncryptedFileDownloader(CryptStreamDownloader):
         pass
 
     def get_total_bytes(self):
-        d = self.stream_info_manager.get_blobs_for_stream(self.stream_hash)
+        d = self.storage.get_blobs_for_stream(self.stream_hash)
 
         def calculate_size(blobs):
-            return sum([b[3] for b in blobs])
+            return sum([b.length for b in blobs])
 
         d.addCallback(calculate_size)
         return d
@@ -106,7 +88,7 @@ class EncryptedFileDownloader(CryptStreamDownloader):
 
     def _get_metadata_handler(self, download_manager):
         return EncryptedFileMetadataHandler(self.stream_hash,
-                                            self.stream_info_manager, download_manager)
+                                            self.storage, download_manager)
 
 
 class EncryptedFileDownloaderFactory(object):
@@ -129,13 +111,7 @@ class EncryptedFileDownloaderFactory(object):
         payment_rate_manager.min_blob_data_payment_rate = data_rate
 
         def save_source_if_blob(stream_hash):
-            if metadata.metadata_source == StreamMetadata.FROM_BLOB:
-                d = self.stream_info_manager.save_sd_blob_hash_to_stream(
-                    stream_hash, metadata.source_blob_hash)
-            else:
-                d = defer.succeed(True)
-            d.addCallback(lambda _: stream_hash)
-            return d
+            return defer.succeed(metadata.source_blob_hash)
 
         def create_downloader(stream_hash):
             downloader = self._make_downloader(stream_hash, payment_rate_manager,
@@ -144,7 +120,7 @@ class EncryptedFileDownloaderFactory(object):
             d.addCallback(lambda _: downloader)
             return d
 
-        d = save_sd_info(self.stream_info_manager, metadata.validator.raw_info)
+        d = save_sd_info(self.blob_manager, metadata.source_blob_hash, metadata.validator.raw_info)
         d.addCallback(save_source_if_blob)
         d.addCallback(create_downloader)
         return d
