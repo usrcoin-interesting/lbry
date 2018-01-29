@@ -7,11 +7,9 @@ from twisted.trial.unittest import TestCase
 from twisted.internet import defer, threads
 
 from lbrynet import conf
-from lbrynet.lbry_file.EncryptedFileMetadataManager import DBEncryptedFileMetadataManager
 from lbrynet.file_manager.EncryptedFileManager import EncryptedFileManager
 from lbrynet.core.Session import Session
 from lbrynet.core.StreamDescriptor import StreamDescriptorIdentifier
-from lbrynet.lbry_file import publish_sd_blob
 from lbrynet.file_manager.EncryptedFileCreator import create_lbry_file
 from lbrynet.lbry_file.client.EncryptedFileOptions import add_lbry_file_to_sd_identifier
 from lbrynet.lbry_file.StreamDescriptor import get_sd_info
@@ -34,7 +32,6 @@ class TestStreamify(TestCase):
     def setUp(self):
         mocks.mock_conf_settings(self)
         self.session = None
-        self.stream_info_manager = None
         self.lbry_file_manager = None
         self.addCleanup(self.take_down_env)
         self.is_generous = True
@@ -45,8 +42,6 @@ class TestStreamify(TestCase):
             d.addCallback(lambda _: self.lbry_file_manager.stop())
         if self.session is not None:
             d.addCallback(lambda _: self.session.shut_down())
-        if self.stream_info_manager is not None:
-            d.addCallback(lambda _: self.stream_info_manager.stop())
 
         def delete_test_env():
             shutil.rmtree('client')
@@ -79,13 +74,9 @@ class TestStreamify(TestCase):
             is_generous=self.is_generous, external_ip="127.0.0.1"
         )
 
-        self.stream_info_manager = DBEncryptedFileMetadataManager(db_dir)
-
-        self.lbry_file_manager = EncryptedFileManager(
-            self.session, self.stream_info_manager, sd_identifier)
+        self.lbry_file_manager = EncryptedFileManager(self.session, sd_identifier)
 
         d = self.session.setup()
-        d.addCallback(lambda _: self.stream_info_manager.setup())
         d.addCallback(lambda _: add_lbry_file_to_sd_identifier(sd_identifier))
         d.addCallback(lambda _: self.lbry_file_manager.setup())
 
@@ -93,7 +84,7 @@ class TestStreamify(TestCase):
             self.assertEqual(sd_info, test_create_stream_sd_file)
 
         def verify_stream_descriptor_file(stream_hash):
-            d = get_sd_info(self.lbry_file_manager.stream_info_manager, stream_hash, True)
+            d = get_sd_info(self.session.storage, stream_hash, True)
             d.addCallback(verify_equal)
             return d
 
@@ -134,10 +125,7 @@ class TestStreamify(TestCase):
             blob_tracker_class=DummyBlobAvailabilityTracker, external_ip="127.0.0.1"
         )
 
-        self.stream_info_manager = DBEncryptedFileMetadataManager(self.session.db_dir)
-
-        self.lbry_file_manager = EncryptedFileManager(
-            self.session, self.stream_info_manager, sd_identifier)
+        self.lbry_file_manager = EncryptedFileManager(self.session, sd_identifier)
 
         def start_lbry_file(lbry_file):
             logging.debug("Calling lbry_file.start()")
@@ -164,12 +152,10 @@ class TestStreamify(TestCase):
             test_file = GenFile(53209343, b''.join([chr(i + 5) for i in xrange(0, 64, 6)]))
             stream_hash = yield create_lbry_file(self.session, self.lbry_file_manager, "test_file",
                                              test_file, suggested_file_name="test_file")
-            sd_hash = yield publish_sd_blob(self.stream_info_manager, self.session.blob_manager,
-                                            stream_hash)
+            sd_hash = yield self.session.storage.get_sd_blob_hash_for_stream(stream_hash)
             defer.returnValue((stream_hash, sd_hash))
 
         d = self.session.setup()
-        d.addCallback(lambda _: self.stream_info_manager.setup())
         d.addCallback(lambda _: add_lbry_file_to_sd_identifier(sd_identifier))
         d.addCallback(lambda _: self.lbry_file_manager.setup())
         d.addCallback(lambda _: create_stream())

@@ -10,7 +10,6 @@ import unittest
 from Crypto import Random
 from Crypto.Hash import MD5
 from lbrynet import conf
-from lbrynet.lbry_file.EncryptedFileMetadataManager import DBEncryptedFileMetadataManager
 from lbrynet.file_manager.EncryptedFileManager import EncryptedFileManager
 from lbrynet.core.Session import Session
 from lbrynet.core.server.BlobAvailabilityHandler import BlobAvailabilityHandlerFactory
@@ -119,9 +118,7 @@ class LbryUploader(object):
             peer_port=5553, use_upnp=False, rate_limiter=rate_limiter, wallet=wallet,
             blob_tracker_class=DummyBlobAvailabilityTracker,
             dht_node_class=Node, is_generous=self.is_generous, external_ip="127.0.0.1")
-        stream_info_manager = DBEncryptedFileMetadataManager(self.db_dir)
-        self.lbry_file_manager = EncryptedFileManager(
-            self.session, stream_info_manager, self.sd_identifier)
+        self.lbry_file_manager = EncryptedFileManager(self.session, self.sd_identifier)
         if self.ul_rate_limit is not None:
             self.session.rate_limiter.set_ul_limit(self.ul_rate_limit)
         reactor.callLater(1, self.start_all)
@@ -187,7 +184,7 @@ class LbryUploader(object):
 
     def create_stream_descriptor(self, stream_hash):
         descriptor_writer = BlobStreamDescriptorWriter(self.session.blob_manager)
-        d = get_sd_info(self.lbry_file_manager.stream_info_manager, stream_hash, True)
+        d = get_sd_info(self.session.storage, stream_hash, True)
         d.addCallback(descriptor_writer.create_descriptor)
         return d
 
@@ -226,9 +223,7 @@ def start_lbry_reuploader(sd_hash, kill_event, dead_event,
                       is_generous=conf.ADJUSTABLE_SETTINGS['is_generous_host'][1],
                       external_ip="127.0.0.1")
 
-    stream_info_manager = DBEncryptedFileMetadataManager(db_dir)
-
-    lbry_file_manager = EncryptedFileManager(session, stream_info_manager, sd_identifier)
+    lbry_file_manager = EncryptedFileManager(session, sd_identifier)
 
     if ul_rate_limit is not None:
         session.rate_limiter.set_ul_limit(ul_rate_limit)
@@ -413,7 +408,6 @@ class TestTransfer(TestCase):
         mocks.mock_conf_settings(self)
         self.server_processes = []
         self.session = None
-        self.stream_info_manager = None
         self.lbry_file_manager = None
         self.is_generous = True
         self.addCleanup(self.take_down_env)
@@ -425,8 +419,6 @@ class TestTransfer(TestCase):
             d.addCallback(lambda _: self.lbry_file_manager.stop())
         if self.session is not None:
             d.addCallback(lambda _: self.session.shut_down())
-        if self.stream_info_manager is not None:
-            d.addCallback(lambda _: self.stream_info_manager.stop())
 
         def delete_test_env():
             dirs = ['server', 'server1', 'server2', 'client']
@@ -519,10 +511,8 @@ class TestTransfer(TestCase):
             blob_tracker_class=DummyBlobAvailabilityTracker,
             dht_node_class=Node, is_generous=self.is_generous, external_ip="127.0.0.1")
 
-        self.stream_info_manager = DBEncryptedFileMetadataManager(db_dir)
-
         self.lbry_file_manager = EncryptedFileManager(
-            self.session, self.stream_info_manager, sd_identifier)
+            self.session, sd_identifier)
 
         def make_downloader(metadata, prm):
             info_validator = metadata.validator
@@ -696,9 +686,7 @@ class TestTransfer(TestCase):
                                is_generous=conf.ADJUSTABLE_SETTINGS['is_generous_host'][1],
                                external_ip="127.0.0.1")
 
-        self.stream_info_manager = DBEncryptedFileMetadataManager(self.session.db_dir)
-        self.lbry_file_manager = EncryptedFileManager(self.session, self.stream_info_manager,
-                                                      sd_identifier)
+        self.lbry_file_manager = EncryptedFileManager(self.session, sd_identifier)
 
         @defer.inlineCallbacks
         def make_downloader(metadata, prm):
@@ -734,11 +722,8 @@ class TestTransfer(TestCase):
         def delete_lbry_file():
             logging.debug("deleting the file")
             d = self.lbry_file_manager.delete_lbry_file(downloaders[0])
-            d.addCallback(lambda _: self.lbry_file_manager.get_count_for_stream_hash(
-                downloaders[0].stream_hash))
-            d.addCallback(
-                lambda c: self.stream_info_manager.delete_stream(
-                    downloaders[1].stream_hash) if c == 0 else True)
+            d.addCallback(lambda _:
+                          self.session.storage.delete_stream(downloaders[1].stream_hash))
             return d
 
         def check_lbry_file():
@@ -756,7 +741,6 @@ class TestTransfer(TestCase):
         def start_transfer(sd_hash):
             logging.debug("Starting the transfer")
             yield self.session.setup()
-            yield self.stream_info_manager.setup()
             yield add_lbry_file_to_sd_identifier(sd_identifier)
             yield self.lbry_file_manager.setup()
             yield download_file(sd_hash)
@@ -819,10 +803,8 @@ class TestTransfer(TestCase):
                                is_generous=conf.ADJUSTABLE_SETTINGS['is_generous_host'][1],
                                external_ip="127.0.0.1")
 
-        self.stream_info_manager = DBEncryptedFileMetadataManager(db_dir)
-
         self.lbry_file_manager = EncryptedFileManager(
-            self.session, self.stream_info_manager, sd_identifier)
+            self.session, sd_identifier)
 
         def start_additional_uploaders(sd_hash):
             for i in range(1, num_uploaders):
