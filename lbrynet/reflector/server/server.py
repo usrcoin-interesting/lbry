@@ -6,7 +6,7 @@ from twisted.internet.protocol import Protocol, ServerFactory
 from lbrynet.core.utils import is_valid_blobhash
 from lbrynet.core.Error import DownloadCanceledError, InvalidBlobHashError, NoSuchSDHash
 from lbrynet.core.StreamDescriptor import BlobStreamDescriptorReader
-from lbrynet.lbry_file.StreamDescriptor import save_sd_info
+from lbrynet.core.StreamDescriptor import save_sd_info
 from lbrynet.reflector.common import REFLECTOR_V1, REFLECTOR_V2
 from lbrynet.reflector.common import ReflectorRequestError, ReflectorClientVersionError
 

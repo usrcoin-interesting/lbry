@@ -1,5 +1,5 @@
-from lbrynet.lbry_file.StreamDescriptor import EncryptedFileStreamType
-from lbrynet.lbry_file.StreamDescriptor import EncryptedFileStreamDescriptorValidator
+from lbrynet.core.StreamDescriptor import EncryptedFileStreamType
+from lbrynet.core.StreamDescriptor import EncryptedFileStreamDescriptorValidator
 from lbrynet.core.DownloadOption import DownloadOption, DownloadOptionChoice
 
 

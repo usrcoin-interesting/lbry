@@ -2,7 +2,7 @@ import binascii
 
 from zope.interface import implements
 
-from lbrynet.lbry_file.StreamDescriptor import save_sd_info
+from lbrynet.core.StreamDescriptor import save_sd_info
 from lbrynet.cryptstream.client.CryptStreamDownloader import CryptStreamDownloader
 from lbrynet.core.client.StreamProgressManager import FullStreamProgressManager
 from lbrynet.interfaces import IStreamDownloaderFactory

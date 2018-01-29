@@ -2,7 +2,7 @@ from twisted.internet import defer, threads, error
 from twisted.trial import unittest
 
 from lbrynet import conf
-from lbrynet import lbry_file
+from lbrynet.core.StreamDescriptor import get_sd_info
 from lbrynet import reflector
 from lbrynet.core import BlobManager
 from lbrynet.core import PeerManager
@@ -109,7 +109,7 @@ class TestReflector(unittest.TestCase):
 
         def verify_stream_descriptor_file(stream_hash):
             self.stream_hash = stream_hash
-            d = lbry_file.get_sd_info(self.lbry_file_manager.session.storage, stream_hash, True)
+            d = get_sd_info(self.lbry_file_manager.session.storage, stream_hash, True)
             d.addCallback(verify_equal, stream_hash)
             d.addCallback(save_sd_blob_hash)
             return d

@@ -9,8 +9,7 @@ import os
 from twisted.internet import defer
 from twisted.protocols.basic import FileSender
 
-from lbrynet.core.StreamDescriptor import BlobStreamDescriptorWriter
-from lbrynet.lbry_file.StreamDescriptor import EncryptedFileStreamType
+from lbrynet.core.StreamDescriptor import BlobStreamDescriptorWriter, EncryptedFileStreamType
 from lbrynet.cryptstream.CryptStreamCreator import CryptStreamCreator
 from lbrynet.core.cryptoutils import get_lbry_hash_obj
 

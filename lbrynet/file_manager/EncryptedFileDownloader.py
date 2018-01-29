@@ -12,7 +12,7 @@ from lbrynet.lbry_file.client.EncryptedFileDownloader import EncryptedFileSaver
 from lbrynet.lbry_file.client.EncryptedFileDownloader import EncryptedFileDownloader
 from lbrynet.file_manager.EncryptedFileStatusReport import EncryptedFileStatusReport
 from lbrynet.interfaces import IStreamDownloaderFactory
-from lbrynet.lbry_file.StreamDescriptor import save_sd_info
+from lbrynet.core.StreamDescriptor import save_sd_info
 
 log = logging.getLogger(__name__)
 
