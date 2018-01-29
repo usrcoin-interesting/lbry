@@ -30,7 +30,6 @@ from lbrynet.reflector import ServerFactory as reflector_server_factory
 from lbrynet.core.log_support import configure_loggly_handler
 from lbrynet.lbry_file.client.EncryptedFileDownloader import EncryptedFileSaverFactory
 from lbrynet.lbry_file.client.EncryptedFileOptions import add_lbry_file_to_sd_identifier
-from lbrynet.lbry_file.EncryptedFileMetadataManager import DBEncryptedFileMetadataManager
 from lbrynet.lbry_file.StreamDescriptor import EncryptedFileStreamType
 from lbrynet.file_manager.EncryptedFileManager import EncryptedFileManager
 from lbrynet.daemon.Downloader import GetStream
@@ -221,7 +220,6 @@ class Daemon(AuthJSONRPCServer):
         }
         self.looping_call_manager = LoopingCallManager(calls)
         self.sd_identifier = StreamDescriptorIdentifier()
-        self.stream_info_manager = None
         self.lbry_file_manager = None
 
     @defer.inlineCallbacks
@@ -327,7 +325,6 @@ class Daemon(AuthJSONRPCServer):
                 reflector_factory = reflector_server_factory(
                     self.session.peer_manager,
                     self.session.blob_manager,
-                    self.stream_info_manager,
                     self.lbry_file_manager
                 )
                 try:
@@ -519,10 +516,8 @@ class Daemon(AuthJSONRPCServer):
     def _setup_lbry_file_manager(self):
         log.info('Starting the file manager')
         self.startup_status = STARTUP_STAGES[3]
-        self.stream_info_manager = DBEncryptedFileMetadataManager(self.db_dir)
         self.lbry_file_manager = EncryptedFileManager(
             self.session,
-            self.stream_info_manager,
             self.sd_identifier,
             download_directory=self.download_directory
         )
@@ -598,7 +593,7 @@ class Daemon(AuthJSONRPCServer):
             self.session.peer_finder,
             self.session.rate_limiter,
             self.session.blob_manager,
-            self.stream_info_manager,
+            self.session.storage,
             self.session.wallet,
             self.download_directory
         )
@@ -627,7 +622,7 @@ class Daemon(AuthJSONRPCServer):
     def _get_stream_analytics_report(self, claim_dict):
         sd_hash = claim_dict.source_hash
         try:
-            stream_hash = yield self.stream_info_manager.get_stream_hash_for_sd_hash(sd_hash)
+            stream_hash = yield self.session.storage.get_stream_hash_for_sd_hash(sd_hash)
         except Exception:
             stream_hash = None
         report = {
@@ -641,7 +636,7 @@ class Daemon(AuthJSONRPCServer):
             sd_host = None
         report["sd_blob"] = sd_host
         if stream_hash:
-            blob_infos = yield self.stream_info_manager.get_blobs_for_stream(stream_hash)
+            blob_infos = yield self.session.storage.get_blobs_for_stream(stream_hash)
             report["known_blobs"] = len(blob_infos)
         else:
             blob_infos = []
@@ -688,7 +683,7 @@ class Daemon(AuthJSONRPCServer):
                                               conf.settings['data_rate'], timeout)
             try:
                 lbry_file, finished_deferred = yield self.streams[sd_hash].start(claim_dict, name)
-                yield self.stream_info_manager.save_outpoint_to_file(lbry_file.rowid, txid, nout)
+                yield self.session.storage.save_outpoint_to_file(lbry_file.rowid, txid, nout)
                 finished_deferred.addCallbacks(lambda _: _download_finished(download_id, name,
                                                                             claim_dict),
                                                lambda e: _download_failed(e, download_id, name,
@@ -726,7 +721,7 @@ class Daemon(AuthJSONRPCServer):
                 d = reupload.reflect_stream(publisher.lbry_file)
                 d.addCallbacks(lambda _: log.info("Reflected new publication to lbry://%s", name),
                                log.exception)
-        yield self.stream_info_manager.save_outpoint_to_file(publisher.lbry_file.rowid,
+        yield self.session.storage.save_outpoint_to_file(publisher.lbry_file.rowid,
                                                              claim_out['txid'],
                                                              int(claim_out['nout']))
         self.analytics_manager.send_claim_action('publish')
@@ -892,7 +887,7 @@ class Daemon(AuthJSONRPCServer):
             num_completed = file_status.num_completed
             num_known = file_status.num_known
             status = file_status.running_status
-            outpoint = yield self.stream_info_manager.get_file_outpoint(lbry_file.rowid)
+            outpoint = yield self.session.storage.get_file_outpoint(lbry_file.rowid)
 
         result = {
             'completed': lbry_file.completed,
@@ -957,12 +952,12 @@ class Daemon(AuthJSONRPCServer):
             dl.addCallback(lambda blobs: [blob[1] for blob in blobs if blob[0]])
             return dl
 
-        d = self.stream_info_manager.get_blobs_for_stream(stream_hash)
+        d = self.session.storage.get_blobs_for_stream(stream_hash)
         d.addCallback(_get_blobs)
         return d
 
     def get_blobs_for_sd_hash(self, sd_hash):
-        d = self.stream_info_manager.get_stream_hash_for_sd_hash(sd_hash)
+        d = self.session.storage.get_stream_hash_for_sd_hash(sd_hash)
         d.addCallback(self.get_blobs_for_stream_hash)
         return d
 
@@ -2733,8 +2728,8 @@ class Daemon(AuthJSONRPCServer):
             response = yield self._render_response("Don't have that blob")
             defer.returnValue(response)
         try:
-            stream_hash = yield self.stream_info_manager.get_stream_hash_for_sd_hash(blob_hash)
-            yield self.stream_info_manager.delete_stream(stream_hash)
+            stream_hash = yield self.session.storage.get_stream_hash_for_sd_hash(blob_hash)
+            yield self.session.storage.delete_stream(stream_hash)
         except Exception as err:
             pass
         yield self.session.blob_manager.delete_blobs([blob_hash])
