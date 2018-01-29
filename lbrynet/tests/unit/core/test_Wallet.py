@@ -8,10 +8,11 @@ from collections import defaultdict
 from twisted.trial import unittest
 from twisted.internet import threads, defer
 
+from lbrynet.tests.mocks import FakeNetwork
 from lbrynet.core.Error import InsufficientFundsError
-from lbrynet.core.Wallet import Wallet, ReservedPoints
+from lbrynet.core.Wallet import LBRYumWallet, ReservedPoints
 from lbryum.commands import Commands
-
+from lbryum.simple_config import SimpleConfig
 
 test_metadata = {
 'license': 'NASA',
@@ -34,11 +35,14 @@ test_claim_dict = {
 }}
 
 
-class MocLbryumWallet(Wallet):
+class MocLbryumWallet(LBRYumWallet):
     def __init__(self):
+        # LBRYumWallet.__init__(self)
+        self.config = SimpleConfig()
         self.wallet_balance = Decimal(10.0)
         self.total_reserved_points = Decimal(0.0)
         self.queued_payments = defaultdict(Decimal)
+        self.network = FakeNetwork()
 
     def get_least_used_address(self, account=None, for_change=False, max_count=100):
         return defer.succeed(None)
@@ -50,17 +54,10 @@ class MocLbryumWallet(Wallet):
         return defer.succeed(True)
 
 
-class MocEncryptedWallet(Wallet):
-    def __init__(self):
-        self.wallet_balance = Decimal(10.0)
-        self.total_reserved_points = Decimal(0.0)
-        self.queued_payments = defaultdict(Decimal)
-
-
 class WalletTest(unittest.TestCase):
 
     def setUp(self):
-        wallet = MocEncryptedWallet()
+        wallet = MocLbryumWallet()
         seed_text = "travel nowhere air position hill peace suffer parent beautiful rise " \
                     "blood power home crumble teach"
         password = "secret"
