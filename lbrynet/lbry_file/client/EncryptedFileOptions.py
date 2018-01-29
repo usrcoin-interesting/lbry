@@ -4,8 +4,8 @@ from lbrynet.core.DownloadOption import DownloadOption, DownloadOptionChoice
 
 
 def add_lbry_file_to_sd_identifier(sd_identifier):
-    sd_identifier.add_stream_type(
-        EncryptedFileStreamType, EncryptedFileStreamDescriptorValidator, EncryptedFileOptions())
+    sd_identifier.add_stream_type(EncryptedFileStreamType, EncryptedFileStreamDescriptorValidator,
+                                  EncryptedFileOptions())
 
 
 class EncryptedFileOptions(object):
