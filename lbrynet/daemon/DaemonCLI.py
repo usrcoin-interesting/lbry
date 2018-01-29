@@ -38,8 +38,17 @@ def set_flag_vals(flag_names, parsed_args):
 
 
 def main():
-    if len(sys.argv[1:]):
-        method, args = sys.argv[1], sys.argv[2:]
+    argv = sys.argv[1:]
+
+    # check if a config file has been specified. If so, shift
+    # all the arguments so that the parsing can continue without
+    # noticing
+    if sys.argv[1] == "--conf":
+        conf.conf_file = sys.argv[2]
+        argv = sys.argv[3:]
+
+    if len(argv):
+        method, args = argv[0], argv[1:]
     else:
         print_help()
         return
@@ -177,13 +186,14 @@ def print_help():
         "   lbrynet-cli - LBRY command line client.",
         "",
         "USAGE",
-        "   lbrynet-cli <command> [<args>]",
+        "   lbrynet-cli [--conf <config file>] <command> [<args>]",
         "",
         "EXAMPLES",
-        "   lbrynet-cli commands            # list available commands",
-        "   lbrynet-cli status              # get daemon status",
-        "   lbrynet-cli resolve_name what   # resolve a name",
-        "   lbrynet-cli help resolve_name   # get help for a command",
+        "   lbrynet-cli commands                 # list available commands",
+        "   lbrynet-cli status                   # get daemon status",
+        "   lbrynet-cli --conf ~/l1.conf status  # like above but using ~/l1.conf as config file",
+        "   lbrynet-cli resolve_name what        # resolve a name",
+        "   lbrynet-cli help resolve_name        # get help for a command",
         "",
         "COMMANDS",
         wrap_list_to_term_width(commands, prefix='   ')
