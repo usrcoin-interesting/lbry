@@ -133,37 +133,54 @@ class SQLiteStorage(object):
 
         return self.db.runInteraction(_create_tables)
 
+    @defer.inlineCallbacks
+    def run_and_return_one_or_none(self, query, *args):
+        result = yield self.db.runQuery(query, args)
+        if result:
+            defer.returnValue(result[0][0])
+        else:
+            defer.returnValue(None)
+
+    @defer.inlineCallbacks
+    def run_and_return_list(self, query, *args):
+        result = yield self.db.runQuery(query, args)
+        if result:
+            defer.returnValue([i[0] for i in result])
+        else:
+            defer.returnValue([])
+
     def stop(self):
         self.db.close()
         return defer.succeed(True)
 
     # # # # # # # # # blob functions # # # # # # # # #
 
+    @defer.inlineCallbacks
     def add_completed_blob(self, blob_hash, length, next_announce_time, should_announce):
         log.info("Adding a completed blob. blob_hash=%s, length=%i", blob_hash, length)
-        d = self.add_known_blob(blob_hash, length)
-        d.addCallback(lambda _: self.set_blob_status(blob_hash, "finished"))
-        d.addCallback(lambda _: self.set_should_announce(blob_hash, next_announce_time,
-                                                         should_announce))
-        d.addCallback(lambda _: self.db.runOperation("update blob set blob_length=? "
-                                                     "where blob_hash=?",
-                                                     (length, blob_hash)))
-        return d
+        yield self.add_known_blob(blob_hash, length)
+        yield self.set_blob_status(blob_hash, "finished")
+        yield self.set_should_announce(blob_hash, next_announce_time, should_announce)
+        yield self.db.runOperation(
+            "update blob set blob_length=? where blob_hash=?", (length, blob_hash)
+        )
 
     def set_should_announce(self, blob_hash, next_announce_time, should_announce):
         should_announce = 1 if should_announce else 0
-        return self.db.runOperation("update blob set next_announce_time=?, should_announce=? "
-                                    "where blob_hash=?", (next_announce_time, should_announce,
-                                                          blob_hash))
+        return self.db.runOperation(
+            "update blob set next_announce_time=?, should_announce=? where blob_hash=?",
+            (next_announce_time, should_announce, blob_hash)
+        )
 
     def set_blob_status(self, blob_hash, status):
-        return self.db.runOperation("update blob set status=? where blob_hash=?", (status,
-                                                                                   blob_hash))
+        return self.db.runOperation(
+            "update blob set status=? where blob_hash=?", (status, blob_hash)
+        )
 
     def get_blob_status(self, blob_hash):
-        d = self.db.runQuery("select status from blob where blob_hash=?", (blob_hash, ))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select status from blob where blob_hash=?", blob_hash
+        )
 
     @defer.inlineCallbacks
     def add_known_blob(self, blob_hash, length):
@@ -175,21 +192,19 @@ class SQLiteStorage(object):
         defer.returnValue(status)
 
     def should_announce(self, blob_hash):
-        d = self.db.runQuery("select should_announce from blob where blob_hash=?", (blob_hash, ))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select should_announce from blob where blob_hash=?", blob_hash
+        )
 
     def count_should_announce_blobs(self):
-        d = self.db.runQuery("select count(*) from blob where should_announce=1 "
-                             "and status=?", ("finished", ))
-        d.addCallback(lambda r: r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select count(*) from blob where should_announce=1 and status=?", "finished"
+        )
 
     def get_all_should_announce_blobs(self):
-        d = self.db.runQuery("select blob_hash from blob where should_announce=1 "
-                             "and status=?", ("finished", ))
-        d.addCallback(lambda r: [i[0] for i in r])
-        return d
+        return self.run_and_return_list(
+            "select blob_hash from blob where should_announce=1 and status=?", "finished"
+        )
 
     def get_blobs_to_announce(self, hash_announcer):
         def get_and_update(transaction):
@@ -220,9 +235,7 @@ class SQLiteStorage(object):
         return self.db.runInteraction(delete_blobs)
 
     def get_all_blob_hashes(self):
-        d = self.db.runQuery("select blob_hash from blob")
-        d.addCallback(lambda r: [x[0] for x in r])
-        return d
+        return self.run_and_return_list("select blob_hash from blob")
 
     # # # # # # # # # stream blob functions # # # # # # # # #
 
@@ -284,9 +297,7 @@ class SQLiteStorage(object):
         yield self.db.runInteraction(_delete_stream)
 
     def get_all_streams(self):
-        d = self.db.runQuery("select stream_hash from stream")
-        d.addCallback(lambda results: [r[0] for r in results])
-        return d
+        return self.run_and_return_list("select stream_hash from stream")
 
     def get_stream_info(self, stream_hash):
         d = self.db.runQuery("select stream_key, stream_name, suggested_filename from stream "
@@ -300,16 +311,16 @@ class SQLiteStorage(object):
         return d
 
     def get_blob_num_by_hash(self, stream_hash, blob_hash):
-        d = self.db.runQuery("select position from stream_blob "
-                             "where stream_hash=? and blob_hash=?", (stream_hash, blob_hash))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select position from stream_blob where stream_hash=? and blob_hash=?",
+            stream_hash, blob_hash
+        )
 
     def get_stream_blob_by_position(self, stream_hash, blob_num):
-        d = self.db.runQuery("select blob_hash from stream_blob "
-                             "where stream_hash=? and position=?", (stream_hash, blob_num))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select blob_hash from stream_blob where stream_hash=? and position=?",
+            stream_hash, blob_num
+        )
 
     def get_blobs_for_stream(self, stream_hash):
         def _get_blobs_for_stream(transaction):
@@ -331,19 +342,19 @@ class SQLiteStorage(object):
         return self.db.runInteraction(_get_blobs_for_stream)
 
     def get_stream_of_blob(self, blob_hash):
-        d = self.db.runQuery("select stream_hash from stream_blob where blob_hash=?", (blob_hash,))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select stream_hash from stream_blob where blob_hash=?", blob_hash
+        )
 
     def get_sd_blob_hash_for_stream(self, stream_hash):
-        d = self.db.runQuery("select sd_hash from stream where stream_hash=?", (stream_hash,))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select sd_hash from stream where stream_hash=?", stream_hash
+        )
 
     def get_stream_hash_for_sd_hash(self, sd_blob_hash):
-        d = self.db.runQuery("select stream_hash from stream where sd_hash = ?", (sd_blob_hash, ))
-        d.addCallback(lambda r: None if not r else r[0][0])
-        return d
+        return self.run_and_return_one_or_none(
+            "select stream_hash from stream where sd_hash = ?", sd_blob_hash
+        )
 
     @defer.inlineCallbacks
     def get_all_stream_infos(self):
@@ -394,14 +405,14 @@ class SQLiteStorage(object):
         return d
 
     def get_lbry_file_status(self, rowid):
-        d = self.db.runQuery("select status from file where rowid = ?", (rowid,))
-        d.addCallback(lambda r: (r[0][0] if len(r) else None))
-        return d
+        return self.run_and_return_one_or_none(
+            "select status from file where rowid = ?", rowid
+        )
 
     def get_rowid_for_stream_hash(self, stream_hash):
-        d = self.db.runQuery("select rowid from file where stream_hash=?", (stream_hash, ))
-        d.addCallback(lambda r: (r[0][0] if len(r) else None))
-        return d
+        return self.run_and_return_one_or_none(
+            "select rowid from file where stream_hash=?", stream_hash
+        )
 
     # # # # # # # # # claim stuff # # # # # # # # #
 
