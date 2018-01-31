@@ -11,7 +11,7 @@ from lbrynet.core.server.DHTHashAnnouncer import DHTHashAnnouncer
 from lbrynet.core.utils import generate_id
 from lbrynet.core.PaymentRateManager import BasePaymentRateManager, NegotiatedPaymentRateManager
 from lbrynet.core.BlobAvailability import BlobAvailabilityTracker
-from twisted.internet import threads, defer
+from twisted.internet import threads, defer, reactor
 
 log = logging.getLogger(__name__)
 
@@ -233,11 +233,13 @@ class Session(object):
                     # best not to rely on this external ip, the router can be behind layers of NATs
                     self.external_ip = external_ip
                 if self.peer_port:
-                    self.upnp_redirects.append(get_port_mapping(u, self.peer_port, 'TCP',
-                                                                'LBRY peer port'))
+                    self.upnp_redirects.append(
+                        get_port_mapping(u, self.peer_port, 'TCP', 'LBRY peer port')
+                    )
                 if self.dht_node_port:
-                    self.upnp_redirects.append(get_port_mapping(u, self.dht_node_port, 'UDP',
-                                                                'LBRY DHT port'))
+                    self.upnp_redirects.append(
+                        get_port_mapping(u, self.dht_node_port, 'UDP', 'LBRY DHT port')
+                    )
                 return True
             return False
 
@@ -250,9 +252,6 @@ class Session(object):
         return d
 
     def _setup_dht(self):
-
-        from twisted.internet import reactor
-
         log.info("Starting DHT")
 
         def join_resolved_addresses(result):
@@ -300,19 +299,18 @@ class Session(object):
                 raise Exception(
                     "TempBlobManager is no longer supported, specify BlobManager or db_dir")
             else:
-                self.blob_manager = DiskBlobManager(self.hash_announcer,
-                                                    self.blob_dir,
-                                                    self.storage)
+                self.blob_manager = DiskBlobManager(
+                    self.hash_announcer, self.blob_dir, self.storage
+                )
 
         if self.blob_tracker is None:
-            self.blob_tracker = self.blob_tracker_class(self.blob_manager,
-                                                        self.peer_finder,
-                                                        self.dht_node)
+            self.blob_tracker = self.blob_tracker_class(
+                self.blob_manager, self.peer_finder, self.dht_node
+            )
         if self.payment_rate_manager is None:
             self.payment_rate_manager = self.payment_rate_manager_class(
-                self.base_payment_rate_manager,
-                self.blob_tracker,
-                self.is_generous)
+                self.base_payment_rate_manager, self.blob_tracker, self.is_generous
+            )
 
         self.rate_limiter.start()
         d = self.storage.setup()

@@ -60,23 +60,7 @@ class SqliteConnection(adbapi.ConnectionPool):
 
 
 class SQLiteStorage(object):
-    def __init__(self, db_dir):
-        self.db_dir = db_dir
-        self._db_path = os.path.join(db_dir, "lbrynet.sqlite")
-        log.info("connecting to %s", self._db_path)
-        self.db = SqliteConnection(self._db_path)
-
-    def setup(self):
-        def _create_tables(transaction):
-
-            # create table if not exists support (
-            #     support_outpoint text not null primary key,
-            #     claim_id text not null,
-            #     amount real not null,
-            #     valid_at_height real not null
-            # );
-
-            transaction.executescript("""
+    CREATE_TABLES_QUERY = """
             pragma foreign_keys=on;
             pragma journal_mode=WAL;
     
@@ -129,7 +113,25 @@ class SQLiteStorage(object):
                 foreign key(stream_hash) references stream(stream_hash),
                 foreign key(claim_outpoint) references claim(claim_outpoint)
             );
-            """)
+    """
+
+    #TODO: add supports table
+    # create table if not exists support (
+    #     support_outpoint text not null primary key,
+    #     claim_id text not null,
+    #     amount real not null,
+    #     valid_at_height real not null
+    # );
+
+    def __init__(self, db_dir):
+        self.db_dir = db_dir
+        self._db_path = os.path.join(db_dir, "lbrynet.sqlite")
+        log.info("connecting to %s", self._db_path)
+        self.db = SqliteConnection(self._db_path)
+
+    def setup(self):
+        def _create_tables(transaction):
+            transaction.executescript(self.CREATE_TABLES_QUERY)
 
         return self.db.runInteraction(_create_tables)
 

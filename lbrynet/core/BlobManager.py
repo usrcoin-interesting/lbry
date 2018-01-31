@@ -84,9 +84,9 @@ class DiskBlobManager(DHTHashSupplier):
         if blob_hash in self.blobs:
             blob = self.blobs[blob_hash]
             if blob.get_is_verified():
-                return self.storage.set_should_announce(blob_hash,
-                                                 self.get_next_announce_time(),
-                                                 should_announce)
+                return self.storage.set_should_announce(
+                    blob_hash, self.get_next_announce_time(), should_announce
+                )
         return defer.succeed(False)
 
     def get_should_announce(self, blob_hash):
