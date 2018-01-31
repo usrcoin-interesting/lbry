@@ -264,47 +264,78 @@ def save_sd_info(blob_manager, sd_hash, sd_info):
         yield blob_manager.storage.add_known_blobs(stream_blobs)
         yield blob_manager.storage.store_stream(stream_hash, sd_hash, stream_name, key,
                                                 suggested_file_name, stream_blobs)
-
     defer.returnValue(stream_hash)
 
 
+def format_blobs(crypt_blob_infos):
+    formatted_blobs = []
+    for blob_info in crypt_blob_infos:
+        blob = {}
+        if blob_info.length != 0:
+            blob['blob_hash'] = str(blob_info.blob_hash)
+        blob['blob_num'] = blob_info.blob_num
+        blob['iv'] = str(blob_info.iv)
+        blob['length'] = blob_info.length
+        formatted_blobs.append(blob)
+    return formatted_blobs
+
+
+def format_sd_info(stream_type, stream_name, key, suggested_file_name, stream_hash, blobs):
+    return {
+        "stream_type": stream_type,
+        "stream_name": stream_name,
+        "key": key,
+        "suggested_file_name": suggested_file_name,
+        "stream_hash": stream_hash,
+        "blobs": blobs
+    }
+
+
+@defer.inlineCallbacks
 def get_sd_info(storage, stream_hash, include_blobs):
-    d = storage.get_stream_info(stream_hash)
+    """
+    Get an sd info dictionary from storage
 
-    def format_info(stream_info):
-        fields = {}
-        fields['stream_type'] = EncryptedFileStreamType
-        fields['stream_name'] = stream_info[1]
-        fields['key'] = stream_info[0]
-        fields['suggested_file_name'] = stream_info[2]
-        fields['stream_hash'] = stream_hash
+    :param storage: (SQLiteStorage) storage instance
+    :param stream_hash: (str) stream hash
+    :param include_blobs: (bool) include stream blob infos
 
-        def format_blobs(blobs):
-            formatted_blobs = []
-            for blob_info in blobs:
-                blob = {}
-                if blob_info.length != 0:
-                    blob['blob_hash'] = str(blob_info.blob_hash)
-                blob['blob_num'] = blob_info.blob_num
-                blob['iv'] = str(blob_info.iv)
-                blob['length'] = blob_info.length
-                formatted_blobs.append(blob)
-            fields['blobs'] = formatted_blobs
-            return fields
+    :return: {
+        "stream_type": "lbryfile",
+        "stream_name": <hex encoded stream name>,
+        "key": <stream key>,
+        "suggested_file_name": <hex encoded suggested file name>,
+        "stream_hash": <stream hash>,
+        "blobs": [
+            {
+                "blob_hash": <head blob_hash>,
+                "blob_num": 0,
+                "iv": <iv>,
+                "length": <head blob length>
+            }, ...
+            {
+                "blob_num": <stream length>,
+                "iv": <iv>,
+                "length": 0
+            }
+        ]
+    }
+    """
 
-        if include_blobs is True:
-            d = storage.get_blobs_for_stream(stream_hash)
-        else:
-            d = defer.succeed([])
-        d.addCallback(format_blobs)
-        return d
+    stream_info = yield storage.get_stream_info(stream_hash)
+    blobs = []
+    if include_blobs:
+        blobs = yield storage.get_blobs_for_stream(stream_hash)
+    defer.returnValue(
+        format_sd_info(
+            EncryptedFileStreamType, stream_info[0], stream_info[1],
+            stream_info[2], stream_hash, blobs
+        )
+    )
 
-    d.addCallback(format_info)
-    return d
 
-
+@defer.inlineCallbacks
 def create_plain_sd(storage, stream_hash, file_name, overwrite_existing=False):
-
     def _get_file_name():
         actual_file_name = file_name
         if os.path.exists(actual_file_name):
@@ -315,18 +346,73 @@ def create_plain_sd(storage, stream_hash, file_name, overwrite_existing=False):
         return actual_file_name
 
     if overwrite_existing is False:
-        d = threads.deferToThread(_get_file_name())
+        file_name = yield threads.deferToThread(_get_file_name())
+    descriptor_writer = PlainStreamDescriptorWriter(file_name)
+    sd_info = yield get_sd_info(storage, stream_hash, True)
+    sd_hash = yield descriptor_writer.create_descriptor(sd_info)
+    defer.returnValue(sd_hash)
+
+
+def get_blob_hashsum(b):
+    length = b['length']
+    if length != 0:
+        blob_hash = b['blob_hash']
     else:
-        d = defer.succeed(file_name)
+        blob_hash = None
+    blob_num = b['blob_num']
+    iv = b['iv']
+    blob_hashsum = get_lbry_hash_obj()
+    if length != 0:
+        blob_hashsum.update(blob_hash)
+    blob_hashsum.update(str(blob_num))
+    blob_hashsum.update(iv)
+    blob_hashsum.update(str(length))
+    return blob_hashsum.digest()
 
-    def do_create(file_name):
-        descriptor_writer = PlainStreamDescriptorWriter(file_name)
-        d = get_sd_info(storage, stream_hash, True)
-        d.addCallback(descriptor_writer.create_descriptor)
-        return d
 
-    d.addCallback(do_create)
-    return d
+def get_stream_hash(hex_stream_name, key, hex_suggested_file_name, blob_infos):
+    h = get_lbry_hash_obj()
+    h.update(hex_stream_name)
+    h.update(key)
+    h.update(hex_suggested_file_name)
+    blobs_hashsum = get_lbry_hash_obj()
+    sorted_blob_infos = sorted(blob_infos, key=lambda x: x['blob_num'])
+    for blob in sorted_blob_infos:
+        blobs_hashsum.update(get_blob_hashsum(blob))
+    if sorted_blob_infos[-1]['length'] != 0:
+        raise InvalidStreamDescriptorError("Does not end with a zero-length blob.")
+    if 'blob_hash' in sorted_blob_infos[-1]:
+        raise InvalidStreamDescriptorError("Stream terminator blob should not have a hash")
+    h.update(blobs_hashsum.digest())
+    return h.hexdigest()
+
+
+def verify_hex(text, field_name):
+    for c in text:
+        if c not in '0123456789abcdef':
+            raise InvalidStreamDescriptorError("%s is not a hex-encoded string" % field_name)
+
+
+def validate_descriptor(stream_info):
+    try:
+        hex_stream_name = stream_info['stream_name']
+        key = stream_info['key']
+        hex_suggested_file_name = stream_info['suggested_file_name']
+        stream_hash = stream_info['stream_hash']
+        blobs = stream_info['blobs']
+    except KeyError as e:
+        raise InvalidStreamDescriptorError("Missing '%s'" % (e.args[0]))
+
+    verify_hex(key, "key")
+    verify_hex(hex_suggested_file_name, "suggested file name")
+    verify_hex(stream_hash, "stream_hash")
+
+    calculated_stream_hash = get_stream_hash(
+        hex_stream_name, key, hex_suggested_file_name, blobs
+    )
+    if calculated_stream_hash != stream_hash:
+        raise InvalidStreamDescriptorError("Stream hash does not match stream metadata")
+    return True
 
 
 class EncryptedFileStreamDescriptorValidator(object):
@@ -334,50 +420,7 @@ class EncryptedFileStreamDescriptorValidator(object):
         self.raw_info = raw_info
 
     def validate(self):
-        log.debug("Trying to validate stream descriptor for %s", str(self.raw_info['stream_name']))
-        try:
-            hex_stream_name = self.raw_info['stream_name']
-            key = self.raw_info['key']
-            hex_suggested_file_name = self.raw_info['suggested_file_name']
-            stream_hash = self.raw_info['stream_hash']
-            blobs = self.raw_info['blobs']
-        except KeyError as e:
-            raise InvalidStreamDescriptorError("Missing '%s'" % (e.args[0]))
-        for c in hex_suggested_file_name:
-            if c not in '0123456789abcdef':
-                raise InvalidStreamDescriptorError(
-                    "Suggested file name is not a hex-encoded string")
-        h = get_lbry_hash_obj()
-        h.update(hex_stream_name)
-        h.update(key)
-        h.update(hex_suggested_file_name)
-
-        def get_blob_hashsum(b):
-            length = b['length']
-            if length != 0:
-                blob_hash = b['blob_hash']
-            else:
-                blob_hash = None
-            blob_num = b['blob_num']
-            iv = b['iv']
-            blob_hashsum = get_lbry_hash_obj()
-            if length != 0:
-                blob_hashsum.update(blob_hash)
-            blob_hashsum.update(str(blob_num))
-            blob_hashsum.update(iv)
-            blob_hashsum.update(str(length))
-            return blob_hashsum.digest()
-
-        blobs_hashsum = get_lbry_hash_obj()
-        for blob in blobs:
-            blobs_hashsum.update(get_blob_hashsum(blob))
-        if blobs[-1]['length'] != 0:
-            raise InvalidStreamDescriptorError("Does not end with a zero-length blob.")
-        h.update(blobs_hashsum.digest())
-        if h.hexdigest() != stream_hash:
-            raise InvalidStreamDescriptorError("Stream hash does not match stream metadata")
-        log.debug("It is validated")
-        return defer.succeed(True)
+        return defer.succeed(validate_descriptor(self.raw_info))
 
     def info_to_show(self):
         info = []
@@ -397,7 +440,6 @@ class EncryptedFileStreamDescriptorValidator(object):
         for blob_info in self.raw_info.get("blobs", []):
             size_so_far += int(blob_info['length'])
         return size_so_far
-
 
 
 @defer.inlineCallbacks

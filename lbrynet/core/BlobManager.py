@@ -63,8 +63,9 @@ class DiskBlobManager(DHTHashSupplier):
     def blob_completed(self, blob, next_announce_time=None, should_announce=True):
         if next_announce_time is None:
             next_announce_time = self.get_next_announce_time()
-        yield self.storage.add_completed_blob(blob.blob_hash, blob.length,
-                                       next_announce_time, should_announce)
+        yield self.storage.add_completed_blob(
+            blob.blob_hash, blob.length, next_announce_time, should_announce
+        )
         # we announce all blobs immediately, if announce_head_blob_only is False
         # otherwise, announce only if marked as should_announce
         if not self.announce_head_blobs_only or should_announce:
@@ -102,8 +103,7 @@ class DiskBlobManager(DHTHashSupplier):
         new_blob = BlobFile(self.blob_dir, blob_creator.blob_hash, blob_creator.length)
         self.blobs[blob_creator.blob_hash] = new_blob
         next_announce_time = self.get_next_announce_time()
-        d = self.blob_completed(new_blob, next_announce_time, should_announce)
-        return d
+        return self.blob_completed(new_blob, next_announce_time, should_announce)
 
     def immediate_announce_all_blobs(self):
         d = self._get_all_verified_blob_hashes()

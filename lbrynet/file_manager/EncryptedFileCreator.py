@@ -10,8 +10,8 @@ from twisted.internet import defer
 from twisted.protocols.basic import FileSender
 
 from lbrynet.core.StreamDescriptor import BlobStreamDescriptorWriter, EncryptedFileStreamType
+from lbrynet.core.StreamDescriptor import format_sd_info, get_stream_hash
 from lbrynet.cryptstream.CryptStreamCreator import CryptStreamCreator
-from lbrynet.core.cryptoutils import get_lbry_hash_obj
 
 log = logging.getLogger(__name__)
 
@@ -28,62 +28,25 @@ class EncryptedFileStreamCreator(CryptStreamCreator):
         self.suggested_file_name = suggested_file_name or name
         self.stream_hash = None
         self.blob_infos = []
+        self.sd_info = None
 
     def _blob_finished(self, blob_info):
         log.debug("length: %s", blob_info.length)
-        self.blob_infos.append(blob_info)
+        self.blob_infos.append(blob_info.get_dict())
         return blob_info
 
-    def _get_blobs_hashsum(self):
-        blobs_hashsum = get_lbry_hash_obj()
-        for blob_info in sorted(self.blob_infos, key=lambda b_i: b_i.blob_num):
-            length = blob_info.length
-            if length != 0:
-                blob_hash = blob_info.blob_hash
-            else:
-                blob_hash = None
-            blob_num = blob_info.blob_num
-            iv = blob_info.iv
-            blob_hashsum = get_lbry_hash_obj()
-            if length != 0:
-                blob_hashsum.update(blob_hash)
-            blob_hashsum.update(str(blob_num))
-            blob_hashsum.update(iv)
-            blob_hashsum.update(str(length))
-            blobs_hashsum.update(blob_hashsum.digest())
-        return blobs_hashsum.digest()
-
-    def _make_stream_hash(self):
-        hashsum = get_lbry_hash_obj()
-        hashsum.update(hexlify(self.name))
-        hashsum.update(hexlify(self.key))
-        hashsum.update(hexlify(self.suggested_file_name))
-        hashsum.update(self._get_blobs_hashsum())
-        self.stream_hash = hashsum.hexdigest()
-
     def _finished(self):
-        self._make_stream_hash()
+        # calculate the stream hash
+        self.stream_hash = get_stream_hash(
+            hexlify(self.name), hexlify(self.key), hexlify(self.suggested_file_name),
+            self.blob_infos
+        )
+        # generate the sd info
+        self.sd_info = format_sd_info(
+            EncryptedFileStreamType, hexlify(self.name), hexlify(self.key),
+            hexlify(self.suggested_file_name), self.stream_hash, self.blob_infos
+        )
         return defer.succeed(self.stream_hash)
-
-    def get_sd_info(self, stream_type=EncryptedFileStreamType):
-        sd_blob = {}
-        sd_blob['stream_type'] = stream_type
-        sd_blob['stream_name'] = hexlify(self.name)
-        sd_blob['key'] = hexlify(self.key)
-        sd_blob['suggested_file_name'] = hexlify(self.suggested_file_name)
-        sd_blob['stream_hash'] = self.stream_hash
-
-        formatted_blobs = []
-        for blob_info in self.blob_infos:
-            blob = {}
-            if blob_info.length != 0:
-                blob['blob_hash'] = blob_info.blob_hash
-            blob['blob_num'] = blob_info.blob_num
-            blob['iv'] = blob_info.iv
-            blob['length'] = blob_info.length
-            formatted_blobs.append(blob)
-        sd_blob['blobs'] = formatted_blobs
-        return defer.succeed(sd_blob)
 
 
 # TODO: this should be run its own thread. Encrypting a large file can
@@ -139,11 +102,9 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     base_file_name = os.path.basename(file_name)
 
     lbry_file_creator = EncryptedFileStreamCreator(
-        session.blob_manager,
-        lbry_file_manager,
-        base_file_name, key,
-        iv_generator,
-        suggested_file_name)
+        session.blob_manager, lbry_file_manager, base_file_name, key,
+        iv_generator, suggested_file_name
+    )
 
     yield lbry_file_creator.setup()
     # TODO: Using FileSender isn't necessary, we can just read
@@ -157,18 +118,18 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     yield lbry_file_creator.stop()
 
     log.debug("making the sd blob")
-    sd_info = yield lbry_file_creator.get_sd_info()
+    sd_info = lbry_file_creator.sd_info
     descriptor_writer = BlobStreamDescriptorWriter(session.blob_manager)
     sd_hash = yield descriptor_writer.create_descriptor(sd_info)
 
     log.debug("saving the stream")
+    yield session.storage.store_stream(
+        sd_info['stream_hash'], sd_hash, sd_info['stream_name'], sd_info['key'],
+        sd_info['suggested_file_name'], sd_info['blobs']
+    )
 
-    yield session.storage.store_stream(sd_info['stream_hash'], sd_hash, sd_info['stream_name'],
-                                       sd_info['key'], sd_info['suggested_file_name'],
-                                       sd_info['blobs'])
-
-    yield lbry_file_manager.add_lbry_file(sd_info['stream_hash'], sd_hash)
-    defer.returnValue(lbry_file_creator.stream_hash)
+    lbry_file = yield lbry_file_manager.add_lbry_file(sd_info['stream_hash'], sd_hash)
+    defer.returnValue(lbry_file.stream_hash)
 
 
 def hexlify(str_or_unicode):
