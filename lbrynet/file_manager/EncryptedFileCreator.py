@@ -128,8 +128,8 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
         sd_info['suggested_file_name'], sd_info['blobs']
     )
 
-    lbry_file = yield lbry_file_manager.add_lbry_file(sd_info['stream_hash'], sd_hash)
-    defer.returnValue(lbry_file.stream_hash)
+    yield lbry_file_manager.add_lbry_file(sd_info['stream_hash'], sd_hash)
+    defer.returnValue(lbry_file_creator.stream_hash)
 
 
 def hexlify(str_or_unicode):
