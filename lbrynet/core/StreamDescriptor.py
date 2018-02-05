@@ -255,15 +255,16 @@ def save_sd_info(blob_manager, sd_hash, sd_info):
                                                (sd_hash, calculated_sd_hash))
     stream_hash = yield blob_manager.storage.get_stream_hash_for_sd_hash(sd_hash)
     if not stream_hash:
-        log.info("Saving info for %s", str(sd_info['stream_name']))
+        log.debug("Saving info for %s", sd_info['stream_name'].decode('hex'))
         stream_name = sd_info['stream_name']
         key = sd_info['key']
         stream_hash = sd_info['stream_hash']
         stream_blobs = sd_info['blobs']
         suggested_file_name = sd_info['suggested_file_name']
         yield blob_manager.storage.add_known_blobs(stream_blobs)
-        yield blob_manager.storage.store_stream(stream_hash, sd_hash, stream_name, key,
-                                                suggested_file_name, stream_blobs)
+        yield blob_manager.storage.store_stream(
+            stream_hash, sd_hash, stream_name, key, suggested_file_name, stream_blobs
+        )
     defer.returnValue(stream_hash)
 
 
@@ -329,7 +330,7 @@ def get_sd_info(storage, stream_hash, include_blobs):
     defer.returnValue(
         format_sd_info(
             EncryptedFileStreamType, stream_info[0], stream_info[1],
-            stream_info[2], stream_hash, blobs
+            stream_info[2], stream_hash, format_blobs(blobs)
         )
     )
 

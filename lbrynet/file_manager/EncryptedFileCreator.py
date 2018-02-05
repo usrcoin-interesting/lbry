@@ -21,11 +21,10 @@ class EncryptedFileStreamCreator(CryptStreamCreator):
     A CryptStreamCreator which adds itself and its additional metadata to an EncryptedFileManager
     """
 
-    def __init__(self, blob_manager, lbry_file_manager, name=None,
-                 key=None, iv_generator=None, suggested_file_name=None):
-        CryptStreamCreator.__init__(self, blob_manager, name, key, iv_generator)
+    def __init__(self, blob_manager, lbry_file_manager, stream_name=None,
+                 key=None, iv_generator=None):
+        CryptStreamCreator.__init__(self, blob_manager, stream_name, key, iv_generator)
         self.lbry_file_manager = lbry_file_manager
-        self.suggested_file_name = suggested_file_name or name
         self.stream_hash = None
         self.blob_infos = []
         self.sd_info = None
@@ -38,13 +37,13 @@ class EncryptedFileStreamCreator(CryptStreamCreator):
     def _finished(self):
         # calculate the stream hash
         self.stream_hash = get_stream_hash(
-            hexlify(self.name), hexlify(self.key), hexlify(self.suggested_file_name),
+            hexlify(self.name), hexlify(self.key), hexlify(self.name),
             self.blob_infos
         )
         # generate the sd info
         self.sd_info = format_sd_info(
             EncryptedFileStreamType, hexlify(self.name), hexlify(self.key),
-            hexlify(self.suggested_file_name), self.stream_hash, self.blob_infos
+            hexlify(self.name), self.stream_hash, self.blob_infos
         )
         return defer.succeed(self.stream_hash)
 
@@ -56,8 +55,7 @@ class EncryptedFileStreamCreator(CryptStreamCreator):
 #       we can simply read the file from the disk without needing to
 #       involve reactor.
 @defer.inlineCallbacks
-def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=None,
-                     iv_generator=None, suggested_file_name=None):
+def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=None, iv_generator=None):
     """Turn a plain file into an LBRY File.
 
     An LBRY File is a collection of encrypted blobs of data and the metadata that binds them
@@ -80,10 +78,6 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     @param file_handle: The file-like object to read
     @type file_handle: any file-like object which can be read by twisted.protocols.basic.FileSender
 
-    @param secret_pass_phrase: A string that will be used to generate the public key. If None, a
-        random string will be used.
-    @type secret_pass_phrase: string
-
     @param key: the raw AES key which will be used to encrypt the blobs. If None, a random key will
         be generated.
     @type key: string
@@ -92,9 +86,6 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
         vectors for the blobs. Will be called once for each blob.
     @type iv_generator: a generator function which yields strings
 
-    @param suggested_file_name: what the file should be called when the LBRY File is saved to disk.
-    @type suggested_file_name: string
-
     @return: a Deferred which fires with the stream_hash of the LBRY File
     @rtype: Deferred which fires with hex-encoded string
     """
@@ -102,8 +93,7 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     base_file_name = os.path.basename(file_name)
 
     lbry_file_creator = EncryptedFileStreamCreator(
-        session.blob_manager, lbry_file_manager, base_file_name, key,
-        iv_generator, suggested_file_name
+        session.blob_manager, lbry_file_manager, base_file_name, key, iv_generator
     )
 
     yield lbry_file_creator.setup()
@@ -127,8 +117,11 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
         sd_info['stream_hash'], sd_hash, sd_info['stream_name'], sd_info['key'],
         sd_info['suggested_file_name'], sd_info['blobs']
     )
-
-    yield lbry_file_manager.add_lbry_file(sd_info['stream_hash'], sd_hash)
+    log.debug("adding to the file manager")
+    yield lbry_file_manager.add_published_file(
+        sd_info['stream_hash'], sd_hash, binascii.hexlify(os.path.dirname(file_name)), session.payment_rate_manager,
+        session.payment_rate_manager.min_blob_data_payment_rate
+    )
     defer.returnValue(lbry_file_creator.stream_hash)
 
 

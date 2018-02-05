@@ -1,6 +1,6 @@
 import logging
 import os
-
+from sqlite3 import IntegrityError
 from twisted.internet import threads, defer, reactor
 from lbrynet import conf
 from lbrynet.blob.blob_file import BlobFile
@@ -126,7 +126,11 @@ class DiskBlobManager(DHTHashSupplier):
                 del self.blobs[blob_hash]
             except Exception as e:
                 log.warning("Failed to delete blob file. Reason: %s", e)
-        yield self.storage.delete_blobs_from_db(bh_to_delete_from_db)
+        try:
+            yield self.storage.delete_blobs_from_db(bh_to_delete_from_db)
+        except IntegrityError as err:
+            if err.message != "FOREIGN KEY constraint failed":
+                raise err
 
     @defer.inlineCallbacks
     def _completed_blobs(self, blobhashes_to_check):

@@ -97,13 +97,12 @@ class ReflectorServer(Protocol):
 
     @defer.inlineCallbacks
     def _on_completed_blob(self, blob, response_key):
-        should_announce = False
+        yield self.blob_manager.blob_completed(blob, should_announce=False)
+
         if response_key == RECEIVED_SD_BLOB:
             sd_info = yield BlobStreamDescriptorReader(blob).get_info()
             yield save_sd_info(self.blob_manager, blob.blob_hash, sd_info)
-
-            yield self.lbry_file_manager.add_lbry_file(sd_info['stream_hash'], blob.blob_hash)
-            should_announce = True
+            yield self.blob_manager.set_should_announce(blob.blob_hash, True)
 
             # if we already have the head blob, set it to be announced now that we know it's
             # a head blob
@@ -116,14 +115,13 @@ class ReflectorServer(Protocol):
                 blob_num = yield self.storage.get_blob_num_by_hash(stream_hash,
                                                                    blob.blob_hash)
                 if blob_num == 0:
-                    should_announce = True
                     sd_hash = yield self.storage.get_sd_blob_hash_for_stream(stream_hash)
+                    yield self.blob_manager.set_should_announce(blob.blob_hash, True)
 
                     # if we already have the sd blob, set it to be announced now that we know it's
                     # a sd blob
                     d.addCallback(lambda _: self.check_sd_blob_announce(sd_hash))
 
-        yield self.blob_manager.blob_completed(blob, should_announce=should_announce)
         yield self.close_blob()
         yield d
         log.info("Received %s", blob)

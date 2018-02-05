@@ -64,7 +64,8 @@ class Wallet(object):
     """This class implements the Wallet interface for the LBRYcrd payment system"""
     implements(IWallet)
 
-    def __init__(self):
+    def __init__(self, storage):
+        self.storage = storage
         self.next_manage_call = None
         self.wallet_balance = Decimal(0.0)
         self.total_reserved_points = Decimal(0.0)
@@ -348,7 +349,6 @@ class Wallet(object):
             claim['hex'] = claim['value']
             claim['value'] = None
             claim['error'] = "Failed to decode value"
-
         return claim
 
     def _handle_claim_result(self, results):
@@ -391,6 +391,16 @@ class Wallet(object):
         return results
 
     @defer.inlineCallbacks
+    def save_claim(self, claim_info):
+        if 'value' in claim_info:
+            yield self.storage.save_claim(claim_info['claim'])
+        else:
+            if 'certificate' in claim_info:
+                yield self.storage.save_claim(claim_info['certificate'])
+            if 'claim' in claim_info:
+                yield self.storage.save_claim(claim_info['claim'])
+
+    @defer.inlineCallbacks
     def resolve(self, *uris, **kwargs):
         page = kwargs.get('page', 0)
         page_size = kwargs.get('page_size', 10)
@@ -408,6 +418,7 @@ class Wallet(object):
                 certificate_id = resolve_results['certificate']['claim_id']
             try:
                 result[uri] = self._handle_claim_result(resolve_results)
+                yield self.save_claim(result[uri])
             except (UnknownNameError, UnknownClaimID, UnknownURI) as err:
                 result[uri] = {'error': err.message}
 
@@ -734,8 +745,8 @@ class Wallet(object):
 
 
 class LBRYumWallet(Wallet):
-    def __init__(self, config=None):
-        Wallet.__init__(self)
+    def __init__(self, storage, config=None):
+        Wallet.__init__(self, storage)
         self._config = config
         self.config = make_config(self._config)
         self.network = None
