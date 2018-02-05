@@ -228,19 +228,15 @@ def start_lbry_reuploader(sd_hash, kill_event, dead_event,
     if ul_rate_limit is not None:
         session.rate_limiter.set_ul_limit(ul_rate_limit)
 
-    def make_downloader(metadata, prm):
-        info_validator = metadata.validator
-        options = metadata.options
+    def make_downloader(metadata, prm, download_directory):
         factories = metadata.factories
-        chosen_options = [o.default_value for o in
-                          options.get_downloader_options(info_validator, prm)]
-        return factories[0].make_downloader(metadata, chosen_options, prm)
+        return factories[0].make_downloader(metadata, prm.min_blob_data_payment_rate, prm, download_directory)
 
     def download_file():
         prm = session.payment_rate_manager
         d = download_sd_blob(session, sd_hash, prm)
         d.addCallback(sd_identifier.get_metadata_for_sd_blob)
-        d.addCallback(make_downloader, prm)
+        d.addCallback(make_downloader, prm, db_dir)
         d.addCallback(lambda downloader: downloader.start())
         return d
 
@@ -515,13 +511,8 @@ class TestTransfer(TestCase):
             self.session, sd_identifier)
 
         def make_downloader(metadata, prm):
-            info_validator = metadata.validator
-            options = metadata.options
             factories = metadata.factories
-            chosen_options = [
-                o.default_value for o in options.get_downloader_options(info_validator, prm)
-                ]
-            return factories[0].make_downloader(metadata, chosen_options, prm)
+            return factories[0].make_downloader(metadata, prm.min_blob_data_payment_rate, prm, db_dir)
 
         def download_file(sd_hash):
             prm = self.session.payment_rate_manager
@@ -532,7 +523,7 @@ class TestTransfer(TestCase):
             return d
 
         def check_md5_sum():
-            f = open('test_file')
+            f = open(os.path.join(db_dir, 'test_file'))
             hashsum = MD5.new()
             hashsum.update(f.read())
             self.assertEqual(hashsum.hexdigest(), "4ca2aafb4101c1e42235aad24fbb83be")
@@ -690,18 +681,9 @@ class TestTransfer(TestCase):
 
         @defer.inlineCallbacks
         def make_downloader(metadata, prm):
-            info_validator = metadata.validator
-            options = metadata.options
             factories = metadata.factories
-            chosen_options = [
-                o.default_value for o in options.get_downloader_options(info_validator, prm)
-                ]
-            downloader = yield factories[0].make_downloader(metadata, chosen_options, prm)
+            downloader = yield factories[0].make_downloader(metadata, prm.min_blob_data_payment_rate, prm, db_dir)
             defer.returnValue(downloader)
-
-        def append_downloader(downloader):
-            downloaders.append(downloader)
-            return downloader
 
         @defer.inlineCallbacks
         def download_file(sd_hash):
@@ -710,25 +692,21 @@ class TestTransfer(TestCase):
             metadata = yield sd_identifier.get_metadata_for_sd_blob(sd_blob)
             downloader = yield make_downloader(metadata, prm)
             downloaders.append(downloader)
-            finished_value = yield downloader.start()
-            defer.returnValue(finished_value)
+            yield downloader.start()
+            defer.returnValue(downloader)
 
         def check_md5_sum():
-            f = open('test_file')
+            f = open(os.path.join(db_dir, 'test_file'))
             hashsum = MD5.new()
             hashsum.update(f.read())
             self.assertEqual(hashsum.hexdigest(), "4ca2aafb4101c1e42235aad24fbb83be")
 
-        def delete_lbry_file():
+        def delete_lbry_file(downloader):
             logging.debug("deleting the file")
-            d = self.lbry_file_manager.delete_lbry_file(downloaders[0])
-            d.addCallback(lambda _:
-                          self.session.storage.delete_stream(downloaders[1].stream_hash))
-            return d
+            return self.lbry_file_manager.delete_lbry_file(downloader)
 
-        def check_lbry_file():
-            d = downloaders[1].status()
-            d.addCallback(lambda _: downloaders[1].status())
+        def check_lbry_file(downloader):
+            d = downloader.status()
 
             def check_status_report(status_report):
                 self.assertEqual(status_report.num_known, status_report.num_completed)
@@ -739,16 +717,20 @@ class TestTransfer(TestCase):
 
         @defer.inlineCallbacks
         def start_transfer(sd_hash):
+            # download a file, delete it, and download it again
+
             logging.debug("Starting the transfer")
             yield self.session.setup()
             yield add_lbry_file_to_sd_identifier(sd_identifier)
             yield self.lbry_file_manager.setup()
-            yield download_file(sd_hash)
+            downloader = yield download_file(sd_hash)
             yield check_md5_sum()
-            yield download_file(sd_hash)
-
-            yield check_lbry_file()
-            yield delete_lbry_file()
+            yield check_lbry_file(downloader)
+            yield delete_lbry_file(downloader)
+            downloader = yield download_file(sd_hash)
+            yield check_lbry_file(downloader)
+            yield check_md5_sum()
+            yield delete_lbry_file(downloader)
 
         def stop(arg):
             if isinstance(arg, Failure):

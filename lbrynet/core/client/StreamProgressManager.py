@@ -60,6 +60,7 @@ class StreamProgressManager(object):
         pass
 
     def _stop_outputting(self):
+        log.info("Stop outputting")
         if self.outputting_d is not None:
             return self.outputting_d
         return defer.succeed(None)

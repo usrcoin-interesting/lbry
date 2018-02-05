@@ -192,21 +192,18 @@ class TestReflector(unittest.TestCase):
 
             # check lbry file manager has the file
             files = yield self.server_lbry_file_manager.lbry_files
-            self.assertEqual(1, len(files))
-            self.assertEqual(self.sd_hash, files[0].sd_hash)
-            self.assertEqual('test_file', files[0].file_name)
 
-            status = yield files[0].status()
-            self.assertEqual('stopped', status.running_status)
-            num_blobs = len(self.expected_blobs) -1 # subtract sd hash
-            self.assertEqual(num_blobs, status.num_completed)
-            self.assertEqual(num_blobs, status.num_known)
+            self.assertEqual(0, len(files))
+
+            streams = yield self.server_lbry_file_manager.storage.get_all_streams()
+            self.assertEqual(1, len(streams))
+            stream_info = yield self.server_lbry_file_manager.storage.get_stream_info(self.stream_hash)
+            self.assertEqual(self.sd_hash, stream_info[3])
+            self.assertEqual('test_file'.encode('hex'), stream_info[0])
 
             # check should_announce blobs on blob_manager
             blob_hashes = yield self.server_blob_manager.storage.get_all_should_announce_blobs()
-            self.assertEqual(2, len(blob_hashes))
-            self.assertTrue(self.sd_hash in blob_hashes)
-            self.assertTrue(expected_blob_hashes[0] in blob_hashes)
+            self.assertSetEqual({self.sd_hash, expected_blob_hashes[0]}, set(blob_hashes))
 
         def verify_have_blob(blob_hash, blob_size):
             d = self.server_blob_manager.get_blob(blob_hash)

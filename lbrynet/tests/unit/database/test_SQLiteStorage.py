@@ -1,15 +1,20 @@
+import os
 import shutil
 import tempfile
-
+import logging
+from copy import deepcopy
 from twisted.internet import defer
 from twisted.trial import unittest
-
+from lbryschema.decode import smart_decode
+from lbryschema.claim import ClaimDict
 from lbrynet import conf
-from lbrynet.database.storage import SQLiteStorage
+from lbrynet.database.storage import SQLiteStorage, open_file_for_writing
 from lbrynet.core.StreamDescriptor import StreamDescriptorIdentifier
 from lbrynet.file_manager.EncryptedFileDownloader import ManagedEncryptedFileDownloader
 from lbrynet.file_manager.EncryptedFileManager import EncryptedFileManager
 from lbrynet.tests.util import random_lbry_hash
+
+log = logging.getLogger()
 
 
 def blob_info_dict(blob_info):
@@ -28,16 +33,31 @@ fake_claim_info = {
     'claim_id': 'deadbeef' * 5,
     'address': "bT6wc54qiUUYt34HQF9wnW8b2o2yQTXf2S",
     'claim_sequence': 1,
-    'value': "7b226465736372697074696f6e223a202257686174206973204c4252593f20416e20696e74726f64756"
-             "374696f6e207769746820416c6578205461626172726f6b222c20226c6963656e7365223a20224c4252"
-             "5920696e63222c2022617574686f72223a202253616d75656c20427279616e222c20226c616e6775616"
-             "765223a2022656e222c20227469746c65223a202257686174206973204c4252593f222c2022736f7572"
-             "636573223a207b226c6272795f73645f68617368223a202264353136393234313135303032326639393"
-             "66661376364366139613163343231393337323736613332373565623931323739306264303762613761"
-             "65633166616335666434353433316432323662386662343032363931653739616562323462227d2c202"
-             "2636f6e74656e742d74797065223a2022766964656f2f6d7034222c20227468756d626e61696c223a20"
-             "2268747470733a2f2f73332e616d617a6f6e6177732e636f6d2f66696c65732e6c6272792e696f2f6c6"
-             "f676f2e706e67227d".decode('hex'),
+    'value':  {
+        "version": "_0_0_1",
+        "claimType": "streamType",
+        "stream": {
+          "source": {
+            "source": 'deadbeef' * 12,
+            "version": "_0_0_1",
+            "contentType": "video/mp4",
+            "sourceType": "lbry_sd_hash"
+          },
+          "version": "_0_0_1",
+          "metadata": {
+            "license": "LBRY inc",
+            "description": "What is LBRY? An introduction with Alex Tabarrok",
+            "language": "en",
+            "title": "What is LBRY?",
+            "author": "Samuel Bryan",
+            "version": "_0_1_0",
+            "nsfw": False,
+            "licenseUrl": "",
+            "preview": "",
+            "thumbnail": "https://s3.amazonaws.com/files.lbry.io/logo.png"
+          }
+        }
+    },
     'height': 10000,
     'amount': 1.0,
     'effective_amount': 1.0,
@@ -55,7 +75,13 @@ class FakeAnnouncer(object):
         return self._queue_size
 
 
+class MocSession(object):
+    pass
+
+
 class StorageTest(unittest.TestCase):
+    maxDiff = 5000
+
     @defer.inlineCallbacks
     def setUp(self):
         conf.initialize_settings()
@@ -90,10 +116,22 @@ class StorageTest(unittest.TestCase):
                                            file_name, blobs)
 
     @defer.inlineCallbacks
-    def store_fake_file(self, stream_hash, outpoint, file_name, download_directory, blob_data_rate,
-                                                           status):
-        yield self.storage.save_lbry_file(stream_hash, outpoint, file_name, download_directory,
-                                          blob_data_rate, status)
+    def make_and_store_fake_stream(self, blob_count=2, stream_hash=None, sd_hash=None):
+        stream_hash = stream_hash or random_lbry_hash()
+        sd_hash = sd_hash or random_lbry_hash()
+        blobs = {
+            i + 1: random_lbry_hash() for i in range(blob_count)
+        }
+
+        yield self.store_fake_blob(sd_hash)
+
+        for blob in blobs.itervalues():
+            yield self.store_fake_blob(blob)
+
+        yield self.store_fake_stream(stream_hash, sd_hash)
+
+        for pos, blob in sorted(blobs.iteritems(), key=lambda x: x[0]):
+            yield self.store_fake_stream_blob(stream_hash, blob, pos)
 
 
 class TestSetup(StorageTest):
@@ -178,16 +216,21 @@ class StreamStorageTests(StorageTest):
 
 class FileStorageTests(StorageTest):
     @defer.inlineCallbacks
-    def test_store_file(self):
-        class MocSession(object):
-            pass
+    def test_setup_output(self):
+        file_name = 'encrypted_file_saver_test.tmp'
+        self.assertFalse(os.path.isfile(file_name))
+        written_to = yield open_file_for_writing(self.db_dir, file_name)
+        self.assertTrue(written_to == file_name)
+        self.assertTrue(os.path.isfile(os.path.join(self.db_dir, file_name)))
 
+    @defer.inlineCallbacks
+    def test_store_file(self):
         session = MocSession()
         session.db_dir = self.db_dir
         session.storage = self.storage
         sd_identifier = StreamDescriptorIdentifier()
         download_directory = self.db_dir
-        manager = EncryptedFileManager(session, sd_identifier, download_directory)
+        manager = EncryptedFileManager(session, sd_identifier)
         out = yield manager.session.storage.get_all_lbry_files()
         self.assertEqual(len(out), 0)
 
@@ -204,16 +247,11 @@ class FileStorageTests(StorageTest):
         yield self.store_fake_stream_blob(stream_hash, blob1, 1)
         yield self.store_fake_stream_blob(stream_hash, blob2, 2)
 
-        yield self.storage.save_claim(fake_claim_info)
-
         blob_data_rate = 0
-        outpoint = "%s:%i" % ("deadbeef" * 8, 0)
         file_name = "test file"
-        status = "stopped"
-
-        out = yield manager.session.storage.save_lbry_file(stream_hash, outpoint, file_name,
-                                                           download_directory, blob_data_rate,
-                                                           status)
+        out = yield manager.session.storage.save_published_file(
+            stream_hash, file_name, download_directory, blob_data_rate
+        )
         rowid = yield manager.session.storage.get_rowid_for_stream_hash(stream_hash)
         self.assertEqual(out, rowid)
 
@@ -227,3 +265,69 @@ class FileStorageTests(StorageTest):
         yield manager.session.storage.change_file_status(rowid, running)
         status = yield manager.session.storage.get_lbry_file_status(rowid)
         self.assertEqual(status, ManagedEncryptedFileDownloader.STATUS_RUNNING)
+
+
+class ContentClaimStorageTests(StorageTest):
+    @defer.inlineCallbacks
+    def test_store_content_claim(self):
+        session = MocSession()
+        session.db_dir = self.db_dir
+        session.storage = self.storage
+        sd_identifier = StreamDescriptorIdentifier()
+        download_directory = self.db_dir
+        manager = EncryptedFileManager(session, sd_identifier)
+        out = yield manager.session.storage.get_all_lbry_files()
+        self.assertEqual(len(out), 0)
+
+        stream_hash = random_lbry_hash()
+        sd_hash = fake_claim_info['value']['stream']['source']['source']
+
+        # test that we can associate a content claim to a file
+        # use the generated sd hash in the fake claim
+        fake_outpoint = "%s:%i" % (fake_claim_info['txid'], fake_claim_info['nout'])
+
+        yield self.make_and_store_fake_stream(blob_count=2, stream_hash=stream_hash, sd_hash=sd_hash)
+        blob_data_rate = 0
+        file_name = "test file"
+        yield manager.session.storage.save_published_file(
+            stream_hash, file_name, download_directory, blob_data_rate
+        )
+        yield self.storage.save_claim(fake_claim_info)
+        yield self.storage.save_content_claim(stream_hash, fake_outpoint)
+        stored_content_claim = yield self.storage.get_content_claim(stream_hash)
+        self.assertDictEqual(stored_content_claim, fake_claim_info)
+
+        # test that we can't associate a claim update with a new stream to the file
+        second_stream_hash, second_sd_hash = random_lbry_hash(), random_lbry_hash()
+        yield self.make_and_store_fake_stream(blob_count=2, stream_hash=second_stream_hash, sd_hash=second_sd_hash)
+        try:
+            yield self.storage.save_content_claim(second_stream_hash, fake_outpoint)
+            raise Exception("test failed")
+        except Exception as err:
+            self.assertTrue(err.message == "stream mismatch")
+
+        # test that we can associate a new claim update containing the same stream to the file
+        update_info = deepcopy(fake_claim_info)
+        update_info['txid'] = "beef0000" * 12
+        update_info['nout'] = 0
+        second_outpoint = "%s:%i" % (update_info['txid'], update_info['nout'])
+        yield self.storage.save_claim(update_info)
+        yield self.storage.save_content_claim(stream_hash, second_outpoint)
+        update_info_result = yield self.storage.get_content_claim(stream_hash)
+        self.assertDictEqual(update_info_result, update_info)
+
+        # test that we can't associate an update with a mismatching claim id
+        invalid_update_info = deepcopy(fake_claim_info)
+        invalid_update_info['txid'] = "beef0001" * 12
+        invalid_update_info['nout'] = 0
+        invalid_update_info['claim_id'] = "beef0002" * 5
+        invalid_update_outpoint = "%s:%i" % (invalid_update_info['txid'], invalid_update_info['nout'])
+        yield self.storage.save_claim(invalid_update_info)
+        try:
+            yield self.storage.save_content_claim(stream_hash, invalid_update_outpoint)
+            raise Exception("test failed")
+        except Exception as err:
+            self.assertTrue(err.message == "invalid stream update")
+        current_claim_info = yield self.storage.get_content_claim(stream_hash)
+        # this should still be the previous update
+        self.assertDictEqual(current_claim_info, update_info)
