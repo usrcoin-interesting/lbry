@@ -23,6 +23,7 @@ from lbryschema.decode import smart_decode
 
 # TODO: importing this when internet is disabled raises a socket.gaierror
 from lbrynet.core.system_info import get_lbrynet_version
+from lbrynet.database.storage import SQLiteStorage
 from lbrynet import conf
 from lbrynet.conf import LBRYCRD_WALLET, LBRYUM_WALLET, PTC_WALLET
 from lbrynet.reflector import reupload
@@ -119,6 +120,10 @@ class _FileID(IterableContainer):
     FILE_NAME = 'file_name'
     STREAM_HASH = 'stream_hash'
     ROWID = "rowid"
+    CLAIM_ID = "claim_id"
+    OUTPOINT = "outpoint"
+    TXID = "txid"
+    NOUT = "nout"
 
 
 FileID = _FileID()
@@ -174,6 +179,7 @@ class Daemon(AuthJSONRPCServer):
     def __init__(self, analytics_manager):
         AuthJSONRPCServer.__init__(self, conf.settings['use_auth_http'])
         self.db_dir = conf.settings['data_dir']
+        self.storage = SQLiteStorage(self.db_dir)
         self.download_directory = conf.settings['download_directory']
         if conf.settings['BLOBFILES_DIR'] == "blobfiles":
             self.blobfile_dir = os.path.join(self.db_dir, "blobfiles")
@@ -228,16 +234,6 @@ class Daemon(AuthJSONRPCServer):
 
         configure_loggly_handler()
 
-        @defer.inlineCallbacks
-        def _announce_startup():
-            def _announce():
-                self.announced_startup = True
-                self.startup_status = STARTUP_STAGES[5]
-                log.info("Started lbrynet-daemon")
-                log.info("%i blobs in manager", len(self.session.blob_manager.blobs))
-
-            yield _announce()
-
         log.info("Starting lbrynet-daemon")
 
         self.looping_call_manager.start(Checker.INTERNET_CONNECTION, 3600)
@@ -246,7 +242,8 @@ class Daemon(AuthJSONRPCServer):
 
         yield self._initial_setup()
         yield threads.deferToThread(self._setup_data_directory)
-        yield self._check_db_migration()
+        # yield self._check_db_migration()
+        yield self.storage.setup()
         yield self._get_session()
         yield self._check_wallet_locked()
         yield self._start_analytics()
@@ -256,7 +253,9 @@ class Daemon(AuthJSONRPCServer):
         yield self._setup_query_handlers()
         yield self._setup_server()
         log.info("Starting balance: " + str(self.session.wallet.get_balance()))
-        yield _announce_startup()
+        self.announced_startup = True
+        self.startup_status = STARTUP_STAGES[5]
+        log.info("Started lbrynet-daemon")
         self._auto_renew()
 
     def _get_platform(self):
@@ -516,11 +515,7 @@ class Daemon(AuthJSONRPCServer):
     def _setup_lbry_file_manager(self):
         log.info('Starting the file manager')
         self.startup_status = STARTUP_STAGES[3]
-        self.lbry_file_manager = EncryptedFileManager(
-            self.session,
-            self.sd_identifier,
-            download_directory=self.download_directory
-        )
+        self.lbry_file_manager = EncryptedFileManager(self.session, self.sd_identifier)
         yield self.lbry_file_manager.setup()
         log.info('Done setting up file manager')
 
@@ -549,7 +544,7 @@ class Daemon(AuthJSONRPCServer):
                     config['use_keyring'] = conf.settings['use_keyring']
                 if conf.settings['lbryum_wallet_dir']:
                     config['lbryum_path'] = conf.settings['lbryum_wallet_dir']
-                wallet = LBRYumWallet(config)
+                wallet = LBRYumWallet(self.storage, config)
                 return defer.succeed(wallet)
             elif self.wallet_type == PTC_WALLET:
                 log.info("Using PTC wallet")
@@ -572,7 +567,8 @@ class Daemon(AuthJSONRPCServer):
                 use_upnp=self.use_upnp,
                 wallet=wallet,
                 is_generous=conf.settings['is_generous_host'],
-                external_ip=self.platform['ip']
+                external_ip=self.platform['ip'],
+                storage=self.storage
             )
             self.startup_status = STARTUP_STAGES[2]
 
@@ -682,12 +678,13 @@ class Daemon(AuthJSONRPCServer):
                                               self.disable_max_key_fee,
                                               conf.settings['data_rate'], timeout)
             try:
-                lbry_file, finished_deferred = yield self.streams[sd_hash].start(claim_dict, name)
-                yield self.session.storage.save_outpoint_to_file(lbry_file.rowid, txid, nout)
-                finished_deferred.addCallbacks(lambda _: _download_finished(download_id, name,
-                                                                            claim_dict),
-                                               lambda e: _download_failed(e, download_id, name,
-                                                                          claim_dict))
+                lbry_file, finished_deferred = yield self.streams[sd_hash].start(
+                    claim_dict, name, txid, nout, file_name
+                )
+                finished_deferred.addCallbacks(
+                    lambda _: _download_finished(download_id, name, claim_dict),
+                    lambda e: _download_failed(e, download_id, name, claim_dict)
+                )
                 result = yield self._get_lbry_file_dict(lbry_file, full_status=True)
             except Exception as err:
                 yield _download_failed(err, download_id, name, claim_dict)
@@ -721,9 +718,9 @@ class Daemon(AuthJSONRPCServer):
                 d = reupload.reflect_stream(publisher.lbry_file)
                 d.addCallbacks(lambda _: log.info("Reflected new publication to lbry://%s", name),
                                log.exception)
-        yield self.session.storage.save_outpoint_to_file(publisher.lbry_file.rowid,
-                                                             claim_out['txid'],
-                                                             int(claim_out['nout']))
+        # yield self.session.storage.save_content_claim(
+        #     publisher.lbry_file.stream_hash, "%s:%i" % (claim_out['txid'], int(claim_out['nout']))
+        # )
         self.analytics_manager.send_claim_action('publish')
         log.info("Success! Published to lbry://%s txid: %s nout: %d", name, claim_out['txid'],
                  claim_out['nout'])
@@ -879,7 +876,7 @@ class Daemon(AuthJSONRPCServer):
         else:
             written_bytes = 0
 
-        size = outpoint = num_completed = num_known = status = None
+        size = claim = num_completed = num_known = status = None
 
         if full_status:
             size = yield lbry_file.get_total_bytes()
@@ -887,7 +884,7 @@ class Daemon(AuthJSONRPCServer):
             num_completed = file_status.num_completed
             num_known = file_status.num_known
             status = file_status.running_status
-            outpoint = yield self.session.storage.get_file_outpoint(lbry_file.rowid)
+            claim = yield self.session.storage.get_content_claim(lbry_file.stream_hash)
 
         result = {
             'completed': lbry_file.completed,
@@ -907,7 +904,7 @@ class Daemon(AuthJSONRPCServer):
             'blobs_completed': num_completed,
             'blobs_in_stream': num_known,
             'status': status,
-            'outpoint': outpoint
+            'claim': claim
         }
         defer.returnValue(result)
 
@@ -1380,7 +1377,7 @@ class Daemon(AuthJSONRPCServer):
 
         Usage:
             file_list [--sd_hash=<sd_hash>] [--file_name=<file_name>] [--stream_hash=<stream_hash>]
-                      [--rowid=<rowid>]
+                      [--rowid=<rowid>] [--claim_id=<claim_id>] [--outpoint=<outpoint>] [--txid=<txid>] [--nout=<nout>]
                       [-f]
 
         Options:
@@ -1389,6 +1386,10 @@ class Daemon(AuthJSONRPCServer):
                                            downloads folder
             --stream_hash=<stream_hash>  : get file with matching stream hash
             --rowid=<rowid>              : get file with matching row id
+            --claim_id=<claim_id>        : get file with matching claim id
+            --outpoint=<outpoint>        : get file with matching claim outpoint
+            --txid=<txid>                : get file with matching claim txid
+            --nout=<nout>                : get file with matching claim nout
             -f                           : full status, populate the 'message' and 'size' fields
 
         Returns:
