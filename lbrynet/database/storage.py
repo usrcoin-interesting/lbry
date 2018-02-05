@@ -602,7 +602,8 @@ class SQLiteStorage(object):
                 "height": height,
                 "amount": float(Decimal(amount) / Decimal(COIN)),
                 "nout": int(outpoint.split(":")[1]),
-                "txid": outpoint.split(":")[0]
+                "txid": outpoint.split(":")[0],
+                "channel_claim_id": channel_id
             }
             return r
 

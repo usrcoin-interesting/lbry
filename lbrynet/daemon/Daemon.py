@@ -124,6 +124,7 @@ class _FileID(IterableContainer):
     OUTPOINT = "outpoint"
     TXID = "txid"
     NOUT = "nout"
+    CHANNEL_CLAIM_ID = "channel_claim_id"
 
 
 FileID = _FileID()
@@ -876,7 +877,8 @@ class Daemon(AuthJSONRPCServer):
         else:
             written_bytes = 0
 
-        size = claim = num_completed = num_known = status = None
+        size = claim_id = num_completed = num_known = status = txid = nout = outpoint = metadata = None
+        channel_claim_id = None
 
         if full_status:
             size = yield lbry_file.get_total_bytes()
@@ -885,6 +887,15 @@ class Daemon(AuthJSONRPCServer):
             num_known = file_status.num_known
             status = file_status.running_status
             claim = yield self.session.storage.get_content_claim(lbry_file.stream_hash)
+            if claim:
+                claim_id = claim['claim_id']
+                txid = claim['txid']
+                nout = claim['nout']
+                outpoint = "%s:%i" % (txid, nout)
+                metadata = claim['value']['stream']['metadata']
+                if "fee" not in metadata:
+                    metadata['fee'] = None
+                channel_claim_id = claim['channel_claim_id']
 
         result = {
             'completed': lbry_file.completed,
@@ -904,7 +915,12 @@ class Daemon(AuthJSONRPCServer):
             'blobs_completed': num_completed,
             'blobs_in_stream': num_known,
             'status': status,
-            'claim': claim
+            'claim_id': claim_id,
+            'txid': txid,
+            'nout': nout,
+            'outpoint': outpoint,
+            'metadata': metadata,
+            'channel_claim_id': channel_claim_id
         }
         defer.returnValue(result)
 
@@ -1378,19 +1394,20 @@ class Daemon(AuthJSONRPCServer):
         Usage:
             file_list [--sd_hash=<sd_hash>] [--file_name=<file_name>] [--stream_hash=<stream_hash>]
                       [--rowid=<rowid>] [--claim_id=<claim_id>] [--outpoint=<outpoint>] [--txid=<txid>] [--nout=<nout>]
-                      [-f]
+                      [--channel_claim_id=<channel_claim_id>] [-f]
 
         Options:
-            --sd_hash=<sd_hash>          : get file with matching sd hash
-            --file_name=<file_name>      : get file with matching file name in the
-                                           downloads folder
-            --stream_hash=<stream_hash>  : get file with matching stream hash
-            --rowid=<rowid>              : get file with matching row id
-            --claim_id=<claim_id>        : get file with matching claim id
-            --outpoint=<outpoint>        : get file with matching claim outpoint
-            --txid=<txid>                : get file with matching claim txid
-            --nout=<nout>                : get file with matching claim nout
-            -f                           : full status, populate the 'message' and 'size' fields
+            --sd_hash=<sd_hash>                    : get file with matching sd hash
+            --file_name=<file_name>                : get file with matching file name in the
+                                                     downloads folder
+            --stream_hash=<stream_hash>            : get file with matching stream hash
+            --rowid=<rowid>                        : get file with matching row id
+            --claim_id=<claim_id>                  : get file with matching claim id
+            --outpoint=<outpoint>                  : get file with matching claim outpoint
+            --txid=<txid>                          : get file with matching claim txid
+            --nout=<nout>                          : get file with matching claim nout
+            --channel_claim_id=<channel_claim_id>  : get file with matching channel claim id
+            -f                                     : full status, populate the 'message' and 'size' fields
 
         Returns:
             (list) List of files
@@ -1414,7 +1431,12 @@ class Daemon(AuthJSONRPCServer):
                     'blobs_completed': (int) num_completed, None if full_status is false,
                     'blobs_in_stream': (int) None if full_status is false,
                     'status': (str) downloader status, None if full_status is false,
-                    'outpoint': (str), None if full_status is false or if claim is not found
+                    'claim_id': (str) None if full_status is false or if claim is not found,
+                    'outpoint': (str) None if full_status is false or if claim is not found,
+                    'txid': (str) None if full_status is false or if claim is not found,
+                    'nout': (int) None if full_status is false or if claim is not found,
+                    'metadata': (dict) None if full_status is false or if claim is not found,
+                    'channel_claim_id': (str) None if full_status is false or if claim is not found or signed
                 },
             ]
         """
@@ -1601,24 +1623,29 @@ class Daemon(AuthJSONRPCServer):
         Returns:
             (dict) Dictionary containing information about the stream
             {
-                    'completed': (bool) true if download is completed,
-                    'file_name': (str) name of file,
-                    'download_directory': (str) download directory,
-                    'points_paid': (float) credit paid to download file,
-                    'stopped': (bool) true if download is stopped,
-                    'stream_hash': (str) stream hash of file,
-                    'stream_name': (str) stream name ,
-                    'suggested_file_name': (str) suggested file name,
-                    'sd_hash': (str) sd hash of file,
-                    'download_path': (str) download path of file,
-                    'mime_type': (str) mime type of file,
-                    'key': (str) key attached to file,
-                    'total_bytes': (int) file size in bytes, None if full_status is false,
-                    'written_bytes': (int) written size in bytes,
-                    'blobs_completed': (int) num_completed, None if full_status is false,
-                    'blobs_in_stream': (int) None if full_status is false,
-                    'status': (str) downloader status, None if full_status is false,
-                    'outpoint': (str), None if full_status is false or if claim is not found
+                'completed': (bool) true if download is completed,
+                'file_name': (str) name of file,
+                'download_directory': (str) download directory,
+                'points_paid': (float) credit paid to download file,
+                'stopped': (bool) true if download is stopped,
+                'stream_hash': (str) stream hash of file,
+                'stream_name': (str) stream name ,
+                'suggested_file_name': (str) suggested file name,
+                'sd_hash': (str) sd hash of file,
+                'download_path': (str) download path of file,
+                'mime_type': (str) mime type of file,
+                'key': (str) key attached to file,
+                'total_bytes': (int) file size in bytes, None if full_status is false,
+                'written_bytes': (int) written size in bytes,
+                'blobs_completed': (int) num_completed, None if full_status is false,
+                'blobs_in_stream': (int) None if full_status is false,
+                'status': (str) downloader status, None if full_status is false,
+                'claim_id': (str) claim id,
+                'outpoint': (str) claim outpoint string,
+                'txid': (str) claim txid,
+                'nout': (int) claim nout,
+                'metadata': (dict) claim metadata,
+                'channel_claim_id': (str) None if claim is not signed
             }
         """
 

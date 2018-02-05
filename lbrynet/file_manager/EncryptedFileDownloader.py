@@ -51,6 +51,7 @@ class ManagedEncryptedFileDownloader(EncryptedFileSaver):
         self.outpoint = None
         self.txid = None
         self.nout = None
+        self.channel_claim_id = None
 
     @defer.inlineCallbacks
     def get_claim_info(self, include_supports=True):
@@ -59,6 +60,7 @@ class ManagedEncryptedFileDownloader(EncryptedFileSaver):
             self.claim_id = claim_info['claim_id']
             self.txid = claim_info['txid']
             self.nout = claim_info['nout']
+            self.channel_claim_id = claim_info['channel_claim_id']
             self.outpoint = "%s:%i" % (self.txid, self.nout)
         defer.returnValue(claim_info)
 
