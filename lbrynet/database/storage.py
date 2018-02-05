@@ -2,15 +2,52 @@ import logging
 import os
 import time
 import sqlite3
-from twisted.internet import defer, task, reactor
+import traceback
+from decimal import Decimal
+from twisted.internet import defer, task, reactor, threads
 from twisted.enterprise import adbapi
 
 from lbryschema.claim import ClaimDict
-from lbryschema.decode import smart_decode
 from lbrynet import conf
 from lbrynet.cryptstream.CryptBlob import CryptBlobInfo
+from lbryum.constants import COIN
 
 log = logging.getLogger(__name__)
+
+
+def _get_next_available_file_name(download_directory, file_name):
+    base_name, ext = os.path.splitext(file_name or "_")
+    if ext:
+        ext = ".%s" % ext
+    i = 0
+    while os.path.isfile(os.path.join(download_directory, file_name)):
+        i += 1
+        file_name = "%s_%i%s" % (base_name, i, ext)
+    return os.path.join(download_directory, file_name)
+
+
+def _open_file_for_writing(download_directory, suggested_file_name):
+    file_path = _get_next_available_file_name(download_directory, suggested_file_name)
+    try:
+        file_handle = open(file_path, 'wb')
+        file_handle.close()
+    except IOError:
+        log.error(traceback.format_exc())
+        raise ValueError(
+            "Failed to open %s. Make sure you have permission to save files to that location." % file_path
+        )
+    return os.path.basename(file_path)
+
+
+def open_file_for_writing(download_directory, suggested_file_name):
+    """
+    Used to touch the path of a file to be downloaded
+
+    :param download_directory: (str)
+    :param suggested_file_name: (str)
+    :return: (str) basename
+    """
+    return threads.deferToThread(_open_file_for_writing, download_directory, suggested_file_name)
 
 
 def get_next_announce_time(hash_announcer, num_hashes_to_announce=1, min_reannounce_time=60*60,
@@ -34,18 +71,24 @@ def get_next_announce_time(hash_announcer, num_hashes_to_announce=1, min_reannou
 
 
 def rerun_if_locked(f):
-    def rerun(err, *args, **kwargs):
-        log.error("Failed to execute (%s): %s", err, args)
+    max_attempts = 3
+
+    def rerun(err, rerun_count, *args, **kwargs):
+        log.debug("Failed to execute (%s): %s", err, args)
         if err.check(sqlite3.OperationalError) and err.value.message == "database is locked":
             log.warning("database was locked. rerunning %s with args %s, kwargs %s",
                         str(f), str(args), str(kwargs))
-            return task.deferLater(reactor, 0, wrapper, *args, **kwargs)
-        return err
+            if rerun_count < max_attempts:
+                return task.deferLater(reactor, 0, inner_wrapper, rerun_count + 1, *args, **kwargs)
+        raise err
+
+    def inner_wrapper(rerun_count, *args, **kwargs):
+        d = f(*args, **kwargs)
+        d.addErrback(rerun, rerun_count, *args, **kwargs)
+        return d
 
     def wrapper(*args, **kwargs):
-        d = f(*args, **kwargs)
-        d.addErrback(rerun, *args, **kwargs)
-        return d
+        return inner_wrapper(0, *args, **kwargs)
 
     return wrapper
 
@@ -95,44 +138,48 @@ class SQLiteStorage(object):
                 claim_outpoint text not null primary key,
                 claim_id char(40) not null,
                 claim_name text not null,
-                amount real not null,
-                height real not null,
+                amount integer not null,
+                height integer not null,
                 serialized_metadata blob not null,
                 channel_claim_id text,
                 address text not null,
-                claim_sequence real not null
+                claim_sequence integer not null
             );
 
             create table if not exists file (
                 stream_hash text primary key not null,
-                claim_outpoint text not null,
                 file_name text not null,
                 download_directory text not null,
                 blob_data_rate real not null,
                 status text not null,
-                foreign key(stream_hash) references stream(stream_hash),
-                foreign key(claim_outpoint) references claim(claim_outpoint)
+                foreign key(stream_hash) references stream(stream_hash)
+            );
+            
+            create table if not exists content_claim (
+                claim_outpoint text not null,
+                stream_hash text not null,
+                primary key (claim_outpoint, stream_hash),
+                foreign key (claim_outpoint) references claim(claim_outpoint),
+                foreign key(stream_hash) references file(stream_hash)
+            );
+            
+            create table if not exists support (
+                support_outpoint text not null primary key,
+                claim_id text not null,
+                amount integer not null,
+                address text not null
             );
     """
-
-    #TODO: add supports table
-    # create table if not exists support (
-    #     support_outpoint text not null primary key,
-    #     claim_id text not null,
-    #     amount real not null,
-    #     valid_at_height real not null
-    # );
 
     def __init__(self, db_dir):
         self.db_dir = db_dir
         self._db_path = os.path.join(db_dir, "lbrynet.sqlite")
-        log.info("connecting to %s", self._db_path)
+        log.info("connecting to database: %s", self._db_path)
         self.db = SqliteConnection(self._db_path)
 
     def setup(self):
         def _create_tables(transaction):
             transaction.executescript(self.CREATE_TABLES_QUERY)
-
         return self.db.runInteraction(_create_tables)
 
     @defer.inlineCallbacks
@@ -159,7 +206,7 @@ class SQLiteStorage(object):
 
     @defer.inlineCallbacks
     def add_completed_blob(self, blob_hash, length, next_announce_time, should_announce):
-        log.info("Adding a completed blob. blob_hash=%s, length=%i", blob_hash, length)
+        log.debug("Adding a completed blob. blob_hash=%s, length=%i", blob_hash, length)
         yield self.add_known_blob(blob_hash, length)
         yield self.set_blob_status(blob_hash, "finished")
         yield self.set_should_announce(blob_hash, next_announce_time, should_announce)
@@ -212,18 +259,21 @@ class SQLiteStorage(object):
         def get_and_update(transaction):
             timestamp = time.time()
             if conf.settings['announce_head_blobs_only']:
-                r = transaction.execute("select blob_hash from blob "
-                                        "where blob_hash is not null and should_announce=1 and "
-                                        "next_announce_time<?", (timestamp,))
+                r = transaction.execute(
+                    "select blob_hash from blob "
+                    "where blob_hash is not null and should_announce=1 and next_announce_time<?",
+                    (timestamp,)
+                )
             else:
-                r = transaction.execute("select blob_hash from blob "
-                                        "where blob_hash is not null and next_announce_time<?",
-                                        (timestamp,))
+                r = transaction.execute(
+                    "select blob_hash from blob where blob_hash is not null and next_announce_time<?", (timestamp,)
+                )
 
             blobs = [b for b, in r.fetchall()]
             next_announce_time = get_next_announce_time(hash_announcer, len(blobs))
-            transaction.execute("update blob set next_announce_time=? where next_announce_time<?",
-                                (next_announce_time, timestamp))
+            transaction.execute(
+                "update blob set next_announce_time=? where next_announce_time<?", (next_announce_time, timestamp)
+            )
             log.debug("Got %s blobs to announce, next announce time is in %s seconds", len(blobs),
                       next_announce_time-time.time())
             return blobs
@@ -302,7 +352,7 @@ class SQLiteStorage(object):
         return self.run_and_return_list("select stream_hash from stream")
 
     def get_stream_info(self, stream_hash):
-        d = self.db.runQuery("select stream_key, stream_name, suggested_filename from stream "
+        d = self.db.runQuery("select stream_name, stream_key, suggested_filename, sd_hash from stream "
                              "where stream_hash=?", (stream_hash, ))
         d.addCallback(lambda r: None if not r else r[0])
         return d
@@ -358,47 +408,55 @@ class SQLiteStorage(object):
             "select stream_hash from stream where sd_hash = ?", sd_blob_hash
         )
 
-    @defer.inlineCallbacks
-    def get_all_stream_infos(self):
-        def _get_all_stream_infos(transaction):
-            file_infos = transaction.execute("select rowid, * from file").fetchall()
-            file_dicts = {}
-            for rowid, stream_hash, outpoint, file_name, \
-                download_directory, data_rate, status in file_infos:
-                stream_info = transaction.execute("select * from stream where stream_hash=?",
-                                                  (stream_hash, )).fetchall()
-                sd_hash, key, stream_name, suggested_file_name = stream_info
-
-                file_dicts[stream_hash] = {
-                    'rowid': rowid,
-                    'stream_hash': stream_hash,
-                    'outpoint': outpoint,
-                    'blob_data_rate': data_rate,
-                    'status': status,
-                    'sd_hash': sd_hash,
-                    'key': key,
-                    'stream_name': stream_name,
-                    'suggested_file_name': suggested_file_name
-                }
-            return file_dicts
-
-        result = yield self.db.runInteraction(_get_all_stream_infos)
-        defer.returnValue(result)
-
     # # # # # # # # # file stuff # # # # # # # # #
 
-    def save_lbry_file(self, stream_hash, outpoint, file_name, download_directory,
-                       data_payment_rate, status):
+    @defer.inlineCallbacks
+    def save_downloaded_file(self, stream_hash, file_name, download_directory, data_payment_rate):
+        # touch the closest available file to the file name
+        file_name = yield open_file_for_writing(download_directory.decode('hex'), file_name.decode('hex'))
+        result = yield self.save_published_file(
+            stream_hash, file_name.encode('hex'), download_directory, data_payment_rate
+        )
+        defer.returnValue(result)
+
+    def save_published_file(self, stream_hash, file_name, download_directory, data_payment_rate, status="stopped"):
         def do_save(db_transaction):
-            db_transaction.execute("insert into file values (?, ?, ?, ?, ?, ?)",
-                                    (stream_hash, outpoint, file_name, download_directory,
-                                     data_payment_rate, status))
+            db_transaction.execute(
+                "insert into file values (?, ?, ?, ?, ?)",
+                (stream_hash, file_name, download_directory, data_payment_rate, status)
+            )
             file_rowid = db_transaction.lastrowid
             return file_rowid
         return self.db.runInteraction(do_save)
 
+    def get_filename_for_rowid(self, rowid):
+        return self.run_and_return_one_or_none("select file_name from file where rowid=?", rowid)
+
     def get_all_lbry_files(self):
-        d = self.db.runQuery("select rowid, * from file")
+        def _lbry_file_dict(rowid, stream_hash, file_name, download_dir, data_rate, status, _, sd_hash, stream_key,
+                            stream_name, suggested_file_name):
+            return {
+                "row_id": rowid,
+                "stream_hash": stream_hash,
+                "file_name": file_name,
+                "download_directory": download_dir,
+                "blob_data_rate": data_rate,
+                "status": status,
+                "sd_hash": sd_hash,
+                "key": stream_key,
+                "stream_name": stream_name,
+                "suggested_file_name": suggested_file_name
+            }
+
+        def _get_all_files(transaction):
+            return [
+                _lbry_file_dict(*file_info) for file_info in transaction.execute(
+                    "select file.rowid, file.*, stream.* "
+                    "from file inner join stream on file.stream_hash=stream.stream_hash"
+                ).fetchall()
+            ]
+
+        d = self.db.runInteraction(_get_all_files)
         return d
 
     def change_file_status(self, rowid, new_status):
@@ -416,55 +474,147 @@ class SQLiteStorage(object):
             "select rowid from file where stream_hash=?", stream_hash
         )
 
-    # # # # # # # # # claim stuff # # # # # # # # #
+    # # # # # # # # # support functions # # # # # # # # #
+
+    def save_supports(self, claim_id, supports):
+        # TODO: add 'address' to support items returned for a claim from lbrycrdd and lbryum-server
+        def _save_support(transaction):
+            transaction.execute("delete from support where claim_id=?", (claim_id, ))
+            for support in supports:
+                transaction.execute(
+                    "insert into support values (?, ?, ?, ?)",
+                    ("%s:%i" % (support['txid'], support['nout']), claim_id, int(support['amount'] * COIN),
+                     support.get('address', ""))
+                )
+        return self.db.runInteraction(_save_support)
+
+    def get_supports(self, claim_id):
+        def _format_support(outpoint, supported_id, amount, address):
+            return {
+                "txid": outpoint.split(":")[0],
+                "nout": int(outpoint.split(":")[1]),
+                "claim_id": supported_id,
+                "amount": float(Decimal(amount) / Decimal(COIN)),
+                "address": address,
+            }
+
+        def _get_supports(transaction):
+            return [
+                _format_support(*support_info)
+                for support_info in transaction.execute(
+                    "select * from support where claim_id=?", (claim_id, )
+                ).fetchall()
+            ]
+
+        return self.db.runInteraction(_get_supports)
+
+    # # # # # # # # # claim functions # # # # # # # # #
 
     @defer.inlineCallbacks
     def save_claim(self, claim_info):
         outpoint = "%s:%i" % (claim_info['txid'], claim_info['nout'])
-        claim_dict = smart_decode(claim_info['value'])
+        claim_id = claim_info['claim_id']
+        name = claim_info['name']
+        amount = int(COIN * claim_info['amount'])
+        height = claim_info['height']
+        address = claim_info['address']
+        sequence = claim_info['claim_sequence']
+        claim_dict = ClaimDict.load_dict(claim_info['value'])
+        serialized = claim_dict.serialized.encode('hex')
 
         def _save_claim(transaction):
-            transaction.execute("insert into claim values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                (outpoint, claim_info['claim_id'], claim_info['name'],
-                                 claim_info['amount'], claim_info['height'],
-                                 claim_dict.serialized.encode('hex'), claim_dict.certificate_id,
-                                 claim_info['address'], claim_info['claim_sequence']))
-
-            if claim_info['supports']:
-                valid_at_height = claim_info['valid_at_height']
-                transaction.execute("delete * from support where claim_id=? and valid_at_height<=?",
-                                    (claim_info['claim_id']), valid_at_height)
-                for support in claim_info['supports']:
-                    transaction.execute("insert into support values (?, ?, ?, ?)",
-                                        ("%s:%i" % (claim_info['txid'], claim_info['nout']),
-                                         claim_info['claim_id'], support['amount'],
-                                         valid_at_height))
-
+            transaction.execute(
+                "insert or ignore into claim values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (outpoint, claim_id, name, amount, height, serialized, claim_dict.certificate_id, address, sequence)
+            )
         yield self.db.runInteraction(_save_claim)
 
+        if 'supports' in claim_info:  # if this response doesn't have support info don't overwrite the existing
+                                      # support info
+            yield self.save_supports(claim_id, claim_info['supports'])
+
+    def save_content_claim(self, stream_hash, claim_outpoint):
+        def _save_content_claim(transaction):
+            # get the claim id and serialized metadata
+            claim_info = transaction.execute(
+                "select claim_id, serialized_metadata from claim where claim_outpoint=?", (claim_outpoint, )
+            ).fetchone()
+            if not claim_info:
+                raise Exception("claim not found")
+            new_claim_id, claim = claim_info[0], ClaimDict.deserialize(claim_info[1].decode('hex'))
+
+            # certificate claims should not be in the content_claim table
+            if not claim.is_stream:
+                raise Exception("claim does not contain a stream")
+
+            # get the known sd hash for this stream
+            known_sd_hash = transaction.execute(
+                "select sd_hash from stream where stream_hash=?", (stream_hash, )
+            ).fetchone()
+            if not known_sd_hash:
+                raise Exception("stream not found")
+            # check the claim contains the same sd hash
+            if known_sd_hash[0] != claim.source_hash:
+                raise Exception("stream mismatch")
+
+            # if there is a current claim associated to the file, check that the new claim is an update to it
+            current_associated_content = transaction.execute(
+                "select claim_outpoint from content_claim where stream_hash=?", (stream_hash, )
+            ).fetchone()
+            if current_associated_content:
+                current_associated_claim_id = transaction.execute(
+                    "select claim_id from claim where claim_outpoint=?", current_associated_content
+                ).fetchone()[0]
+                if current_associated_claim_id != new_claim_id:
+                    raise Exception("invalid stream update")
+
+            # update the claim associated to the file
+            transaction.execute("insert or ignore into content_claim values (?, ?)", (claim_outpoint, stream_hash))
+        return self.db.runInteraction(_save_content_claim)
+
     @defer.inlineCallbacks
-    def get_claim(self, claim_id):
-        def _claim_response(outpoint, claim_id, name, amount, height, serialized, channel_id,
-                           address,
-                           claim_sequence):
-            return {
+    def get_content_claim(self, stream_hash, include_supports=True):
+        def _get_content_claim(transaction):
+            claim_id = transaction.execute(
+                "select claim.claim_id from content_claim "
+                "inner join claim on claim.claim_outpoint=content_claim.claim_outpoint and content_claim.stream_hash=? "
+                "order by claim.rowid desc", (stream_hash, )
+            ).fetchone()
+            if not claim_id:
+                return None
+            return claim_id[0]
+
+        content_claim_id = yield self.db.runInteraction(_get_content_claim)
+        result = None
+        if content_claim_id:
+            result = yield self.get_claim(content_claim_id, include_supports)
+        defer.returnValue(result)
+
+    @defer.inlineCallbacks
+    def get_claim(self, claim_id, include_supports=True):
+        def _claim_response(outpoint, claim_id, name, amount, height, serialized, channel_id, address, claim_sequence):
+            r = {
                 "name": name,
                 "claim_id": claim_id,
                 "address": address,
                 "claim_sequence": claim_sequence,
-                "value": ClaimDict.deserialize(serialized).claim_dict,
+                "value": ClaimDict.deserialize(serialized.decode('hex')).claim_dict,
                 "height": height,
-                "amount": amount,
-                "effective_amount": 0.0,
+                "amount": float(Decimal(amount) / Decimal(COIN)),
                 "nout": int(outpoint.split(":")[1]),
                 "txid": outpoint.split(":")[0]
             }
+            return r
 
         def _get_claim(transaction):
-            claim_info = transaction.execute("select * from claim "
-                                             "where claim_id=? order by rowid desc", (claim_id, )
-                                             ).fetchone()
+            claim_info = transaction.execute(
+                "select * from claim where claim_id=? order by rowid desc", (claim_id, )
+            ).fetchone()
             return _claim_response(*claim_info)
 
         result = yield self.db.runInteraction(_get_claim)
+        if include_supports:
+            supports = yield self.get_supports(result['claim_id'])
+            result['supports'] = supports
+            result['effective_amount'] = float(sum([support['amount'] for support in supports]) + result['amount'])
         defer.returnValue(result)
