@@ -5,8 +5,6 @@ import logging
 from copy import deepcopy
 from twisted.internet import defer
 from twisted.trial import unittest
-from lbryschema.decode import smart_decode
-from lbryschema.claim import ClaimDict
 from lbrynet import conf
 from lbrynet.database.storage import SQLiteStorage, open_file_for_writing
 from lbrynet.core.StreamDescriptor import StreamDescriptorIdentifier
