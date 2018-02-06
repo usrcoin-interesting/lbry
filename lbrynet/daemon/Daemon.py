@@ -125,6 +125,8 @@ class _FileID(IterableContainer):
     TXID = "txid"
     NOUT = "nout"
     CHANNEL_CLAIM_ID = "channel_claim_id"
+    CLAIM_NAME = "claim_name"
+    CHANNEL_NAME = "channel_name"
 
 
 FileID = _FileID()
@@ -710,7 +712,8 @@ class Daemon(AuthJSONRPCServer):
         if bid <= 0.0:
             raise Exception("Invalid bid")
         if not file_path:
-            claim_out = yield publisher.publish_stream(name, bid, claim_dict, claim_address,
+            stream_hash = yield self.storage.get_stream_hash_for_sd_hash(claim_dict['stream']['source']['source'])
+            claim_out = yield publisher.publish_stream(name, bid, claim_dict, stream_hash, claim_address,
                                                        change_address)
         else:
             claim_out = yield publisher.create_and_publish_stream(name, bid, claim_dict, file_path,
@@ -877,8 +880,7 @@ class Daemon(AuthJSONRPCServer):
         else:
             written_bytes = 0
 
-        size = claim_id = num_completed = num_known = status = txid = nout = outpoint = metadata = None
-        channel_claim_id = None
+        size = num_completed = num_known = status = None
 
         if full_status:
             size = yield lbry_file.get_total_bytes()
@@ -886,16 +888,6 @@ class Daemon(AuthJSONRPCServer):
             num_completed = file_status.num_completed
             num_known = file_status.num_known
             status = file_status.running_status
-            claim = yield self.session.storage.get_content_claim(lbry_file.stream_hash)
-            if claim:
-                claim_id = claim['claim_id']
-                txid = claim['txid']
-                nout = claim['nout']
-                outpoint = "%s:%i" % (txid, nout)
-                metadata = claim['value']['stream']['metadata']
-                if "fee" not in metadata:
-                    metadata['fee'] = None
-                channel_claim_id = claim['channel_claim_id']
 
         result = {
             'completed': lbry_file.completed,
@@ -915,12 +907,14 @@ class Daemon(AuthJSONRPCServer):
             'blobs_completed': num_completed,
             'blobs_in_stream': num_known,
             'status': status,
-            'claim_id': claim_id,
-            'txid': txid,
-            'nout': nout,
-            'outpoint': outpoint,
-            'metadata': metadata,
-            'channel_claim_id': channel_claim_id
+            'claim_id': lbry_file.claim_id,
+            'txid': lbry_file.txid,
+            'nout': lbry_file.nout,
+            'outpoint': lbry_file.outpoint,
+            'metadata': lbry_file.metadata,
+            'channel_claim_id': lbry_file.channel_claim_id,
+            'channel_name': lbry_file.channel_name,
+            'claim_name': lbry_file.claim_name
         }
         defer.returnValue(result)
 
@@ -1394,7 +1388,8 @@ class Daemon(AuthJSONRPCServer):
         Usage:
             file_list [--sd_hash=<sd_hash>] [--file_name=<file_name>] [--stream_hash=<stream_hash>]
                       [--rowid=<rowid>] [--claim_id=<claim_id>] [--outpoint=<outpoint>] [--txid=<txid>] [--nout=<nout>]
-                      [--channel_claim_id=<channel_claim_id>] [-f]
+                      [--channel_claim_id=<channel_claim_id>] [--channel_name=<channel_name>]
+                      [--claim_name=<claim_name>] [-f]
 
         Options:
             --sd_hash=<sd_hash>                    : get file with matching sd hash
@@ -1407,6 +1402,8 @@ class Daemon(AuthJSONRPCServer):
             --txid=<txid>                          : get file with matching claim txid
             --nout=<nout>                          : get file with matching claim nout
             --channel_claim_id=<channel_claim_id>  : get file with matching channel claim id
+            --channel_name=<channel_name>  : get file with matching channel name
+            --claim_name=<claim_name>              : get file with matching claim name
             -f                                     : full status, populate the 'message' and 'size' fields
 
         Returns:
@@ -1436,7 +1433,9 @@ class Daemon(AuthJSONRPCServer):
                     'txid': (str) None if full_status is false or if claim is not found,
                     'nout': (int) None if full_status is false or if claim is not found,
                     'metadata': (dict) None if full_status is false or if claim is not found,
-                    'channel_claim_id': (str) None if full_status is false or if claim is not found or signed
+                    'channel_claim_id': (str) None if full_status is false or if claim is not found or signed,
+                    'channel_name': (str) None if full_status is false or if claim is not found or signed,
+                    'claim_name': (str) None if full_status is false or if claim is not found
                 },
             ]
         """
@@ -1646,6 +1645,8 @@ class Daemon(AuthJSONRPCServer):
                 'nout': (int) claim nout,
                 'metadata': (dict) claim metadata,
                 'channel_claim_id': (str) None if claim is not signed
+                'channel_name': (str) None if claim is not signed
+                'claim_name': (str) claim name
             }
         """
 
@@ -1736,18 +1737,26 @@ class Daemon(AuthJSONRPCServer):
 
         Usage:
             file_delete [-f] [--delete_all] [--sd_hash=<sd_hash>] [--file_name=<file_name>]
-                        [--stream_hash=<stream_hash>] [--rowid=<rowid>]
+                        [--stream_hash=<stream_hash>] [--rowid=<rowid>] [--claim_id=<claim_id>] [--txid=<txid>]
+                        [--nout=<nout>] [--claim_name=<claim_name>] [--channel_claim_id=<channel_claim_id>]
+                        [--channel_name=<channel_name>]
 
         Options:
-            -f, --delete_from_download_dir  : delete file from download directory,
-                                                instead of just deleting blobs
-            --delete_all                    : if there are multiple matching files,
-                                                allow the deletion of multiple files.
-                                                Otherwise do not delete anything.
-            --sd_hash=<sd_hash>             : delete by file sd hash
-            --file_name<file_name>          : delete by file name in downloads folder
-            --stream_hash=<stream_hash>     : delete by file stream hash
-            --rowid=<rowid>                 : delete by file row id
+            -f, --delete_from_download_dir         : delete file from download directory,
+                                                    instead of just deleting blobs
+            --delete_all                           : if there are multiple matching files,
+                                                     allow the deletion of multiple files.
+                                                     Otherwise do not delete anything.
+            --sd_hash=<sd_hash>                    : delete by file sd hash
+            --file_name<file_name>                 : delete by file name in downloads folder
+            --stream_hash=<stream_hash>            : delete by file stream hash
+            --rowid=<rowid>                        : delete by file row id
+            --claim_id=<claim_id>                  : delete by file claim id
+            --txid=<txid>                          : delete by file claim txid
+            --nout=<nout>                          : delete by file claim nout
+            --claim_name=<claim_name>              : delete by file claim name
+            --channel_claim_id=<channel_claim_id>  : delete by file channel claim id
+            --channel_name=<channel_name>                 : delete by file channel claim name
 
         Returns:
             (bool) true if deletion was successful

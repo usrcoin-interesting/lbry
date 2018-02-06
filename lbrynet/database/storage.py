@@ -8,6 +8,7 @@ from twisted.internet import defer, task, reactor, threads
 from twisted.enterprise import adbapi
 
 from lbryschema.claim import ClaimDict
+from lbryschema.decode import smart_decode
 from lbrynet import conf
 from lbrynet.cryptstream.CryptBlob import CryptBlobInfo
 from lbryum.constants import COIN
@@ -156,9 +157,8 @@ class SQLiteStorage(object):
             );
             
             create table if not exists content_claim (
+                stream_hash text primary key not null,
                 claim_outpoint text not null,
-                stream_hash text not null,
-                primary key (claim_outpoint, stream_hash),
                 foreign key (claim_outpoint) references claim(claim_outpoint),
                 foreign key(stream_hash) references file(stream_hash)
             );
@@ -340,6 +340,7 @@ class SQLiteStorage(object):
         blob_hashes = [b.blob_hash for b in stream_blobs]
 
         def _delete_stream(transaction):
+            transaction.execute("delete from content_claim where stream_hash=? ", (stream_hash,))
             transaction.execute("delete from file where stream_hash=? ", (stream_hash, ))
             transaction.execute("delete from stream_blob where stream_hash=?", (stream_hash, ))
             transaction.execute("delete from stream where stream_hash=? ", (stream_hash, ))
@@ -511,7 +512,7 @@ class SQLiteStorage(object):
     # # # # # # # # # claim functions # # # # # # # # #
 
     @defer.inlineCallbacks
-    def save_claim(self, claim_info):
+    def save_claim(self, claim_info, claim_dict=None):
         outpoint = "%s:%i" % (claim_info['txid'], claim_info['nout'])
         claim_id = claim_info['claim_id']
         name = claim_info['name']
@@ -519,12 +520,12 @@ class SQLiteStorage(object):
         height = claim_info['height']
         address = claim_info['address']
         sequence = claim_info['claim_sequence']
-        claim_dict = ClaimDict.load_dict(claim_info['value'])
+        claim_dict = claim_dict or smart_decode(claim_info['value'])
         serialized = claim_dict.serialized.encode('hex')
 
         def _save_claim(transaction):
             transaction.execute(
-                "insert or ignore into claim values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert or replace into claim values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (outpoint, claim_id, name, amount, height, serialized, claim_dict.certificate_id, address, sequence)
             )
         yield self.db.runInteraction(_save_claim)
@@ -569,7 +570,7 @@ class SQLiteStorage(object):
                     raise Exception("invalid stream update")
 
             # update the claim associated to the file
-            transaction.execute("insert or ignore into content_claim values (?, ?)", (claim_outpoint, stream_hash))
+            transaction.execute("insert or replace into content_claim values (?, ?)", (stream_hash, claim_outpoint))
         return self.db.runInteraction(_save_content_claim)
 
     @defer.inlineCallbacks
@@ -603,19 +604,29 @@ class SQLiteStorage(object):
                 "amount": float(Decimal(amount) / Decimal(COIN)),
                 "nout": int(outpoint.split(":")[1]),
                 "txid": outpoint.split(":")[0],
-                "channel_claim_id": channel_id
+                "channel_claim_id": channel_id,
+                "channel_name": None
             }
             return r
 
         def _get_claim(transaction):
             claim_info = transaction.execute(
-                "select * from claim where claim_id=? order by rowid desc", (claim_id, )
+                "select * from claim where claim_id=? order by height, rowid desc", (claim_id, )
             ).fetchone()
-            return _claim_response(*claim_info)
+            result = _claim_response(*claim_info)
+            if result['channel_claim_id']:
+                channel_name_result = transaction.execute(
+                    "select claim_name from claim where claim_id=?", (result['channel_claim_id'], )
+                ).fetchone()
+                if channel_name_result:
+                    result['channel_name'] = channel_name_result[0]
+            return result
 
         result = yield self.db.runInteraction(_get_claim)
         if include_supports:
             supports = yield self.get_supports(result['claim_id'])
             result['supports'] = supports
-            result['effective_amount'] = float(sum([support['amount'] for support in supports]) + result['amount'])
+            result['effective_amount'] = float(
+                sum([support['amount'] for support in supports]) + result['amount']
+            )
         defer.returnValue(result)

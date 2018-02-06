@@ -393,7 +393,7 @@ class Wallet(object):
     @defer.inlineCallbacks
     def save_claim(self, claim_info):
         if 'value' in claim_info:
-            yield self.storage.save_claim(claim_info['claim'])
+            yield self.storage.save_claim(claim_info)
         else:
             if 'certificate' in claim_info:
                 yield self.storage.save_claim(claim_info['certificate'])
@@ -468,6 +468,7 @@ class Wallet(object):
         claim_out['fee'] = float(claim_out['fee'])
         return claim_out
 
+    @defer.inlineCallbacks
     def claim_new_channel(self, channel_name, amount):
         parsed_channel_name = parse_lbry_uri(channel_name)
         if not parsed_channel_name.is_channel:
@@ -476,7 +477,9 @@ class Wallet(object):
               parsed_channel_name.bid_position or parsed_channel_name.claim_sequence):
             raise Exception("New channel claim should have no fields other than name")
         log.info("Preparing to make certificate claim for %s", channel_name)
-        return self._claim_certificate(parsed_channel_name.name, amount)
+        channel_claim = yield self._claim_certificate(parsed_channel_name.name, amount)
+        yield self.save_claim(self._get_temp_claim_info(channel_claim, channel_name, amount))
+        defer.returnValue(channel_claim)
 
     @defer.inlineCallbacks
     def channel_list(self):
@@ -486,6 +489,20 @@ class Wallet(object):
             formatted = self._handle_claim_result(claim)
             results.append(formatted)
         defer.returnValue(results)
+
+    def _get_temp_claim_info(self, claim_result, name, bid):
+        # save the claim information with a height and sequence of 0, this will be reset upon next resolve
+        return {
+            "claim_id": claim_result['claim_id'],
+            "name": name,
+            "amount": bid,
+            "address": claim_result['claim_address'],
+            "txid": claim_result['txid'],
+            "nout": claim_result['nout'],
+            "value": claim_result['value'],
+            "height": -1,
+            "claim_sequence": -1,
+        }
 
     @defer.inlineCallbacks
     def claim_name(self, name, bid, metadata, certificate_id=None, claim_address=None,
@@ -520,8 +537,8 @@ class Wallet(object):
             log.error(claim)
             msg = 'Claim to name {} failed: {}'.format(name, claim['reason'])
             raise Exception(msg)
-
         claim = self._process_claim_out(claim)
+        yield self.storage.save_claim(self._get_temp_claim_info(claim, name, bid), smart_decode(claim['value']))
         defer.returnValue(claim)
 
     @defer.inlineCallbacks

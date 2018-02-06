@@ -61,7 +61,9 @@ fake_claim_info = {
     'effective_amount': 1.0,
     'nout': 0,
     'txid': "deadbeef" * 8,
-    'supports': []
+    'supports': [],
+    'channel_claim_id': None,
+    'channel_name': None
 }
 
 
@@ -74,7 +76,8 @@ class FakeAnnouncer(object):
 
 
 class MocSession(object):
-    pass
+    def __init__(self, storage):
+        self.storage = storage
 
 
 class StorageTest(unittest.TestCase):
@@ -223,9 +226,8 @@ class FileStorageTests(StorageTest):
 
     @defer.inlineCallbacks
     def test_store_file(self):
-        session = MocSession()
+        session = MocSession(self.storage)
         session.db_dir = self.db_dir
-        session.storage = self.storage
         sd_identifier = StreamDescriptorIdentifier()
         download_directory = self.db_dir
         manager = EncryptedFileManager(session, sd_identifier)
@@ -268,9 +270,8 @@ class FileStorageTests(StorageTest):
 class ContentClaimStorageTests(StorageTest):
     @defer.inlineCallbacks
     def test_store_content_claim(self):
-        session = MocSession()
+        session = MocSession(self.storage)
         session.db_dir = self.db_dir
-        session.storage = self.storage
         sd_identifier = StreamDescriptorIdentifier()
         download_directory = self.db_dir
         manager = EncryptedFileManager(session, sd_identifier)

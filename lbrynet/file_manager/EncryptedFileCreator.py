@@ -91,6 +91,7 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     """
 
     base_file_name = os.path.basename(file_name)
+    file_directory = os.path.dirname(file_handle.name)
 
     lbry_file_creator = EncryptedFileStreamCreator(
         session.blob_manager, lbry_file_manager, base_file_name, key, iv_generator
@@ -119,7 +120,7 @@ def create_lbry_file(session, lbry_file_manager, file_name, file_handle, key=Non
     )
     log.debug("adding to the file manager")
     yield lbry_file_manager.add_published_file(
-        sd_info['stream_hash'], sd_hash, binascii.hexlify(os.path.dirname(file_name)), session.payment_rate_manager,
+        sd_info['stream_hash'], sd_hash, binascii.hexlify(file_directory), session.payment_rate_manager,
         session.payment_rate_manager.min_blob_data_payment_rate
     )
     defer.returnValue(lbry_file_creator.stream_hash)

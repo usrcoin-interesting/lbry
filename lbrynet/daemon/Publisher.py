@@ -39,16 +39,15 @@ class Publisher(object):
         claim_dict['stream']['source']['sourceType'] = 'lbry_sd_hash'
         claim_dict['stream']['source']['contentType'] = get_content_type(file_path)
         claim_dict['stream']['source']['version'] = "_0_0_1"  # need current version here
-
         claim_out = yield self.make_claim(name, bid, claim_dict, claim_address, change_address)
-        self.lbry_file.completed = True
-        yield self.lbry_file.save_status()
+        yield self.session.storage.save_content_claim(stream_hash, "%s:%i" % (claim_out['txid'], claim_out['nout']))
         defer.returnValue(claim_out)
 
     @defer.inlineCallbacks
-    def publish_stream(self, name, bid, claim_dict, claim_address=None, change_address=None):
+    def publish_stream(self, name, bid, claim_dict, stream_hash, claim_address=None, change_address=None):
         """Make a claim without creating a lbry file"""
         claim_out = yield self.make_claim(name, bid, claim_dict, claim_address, change_address)
+        yield self.session.storage.save_content_claim(stream_hash, "%s:%i" % (claim_out['txid'], claim_out['nout']))
         defer.returnValue(claim_out)
 
     @defer.inlineCallbacks
