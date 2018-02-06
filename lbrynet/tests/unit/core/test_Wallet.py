@@ -246,7 +246,7 @@ class WalletTest(unittest.TestCase):
         wallet = MocLbryumWallet()
         wallet._update_balance = update_balance
         d = wallet.setup()
-        d.addCallback(lambda _:  wallet.update_balance())
+        d.addCallback(lambda _: wallet.update_balance())
         d.addCallback(lambda _: self.assertEqual(5, wallet.get_balance()))
         d.addCallback(lambda _: wallet.reserve_points('testid', 2))
         d.addCallback(lambda _: wallet.support_claim(
