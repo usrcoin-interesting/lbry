@@ -30,4 +30,4 @@ secure-file\tools\secure-file -decrypt .\lbry2.pfx.enc -secret "$env:pfx_key"
 signtool.exe sign /f .\lbry2.pfx /p "$env:key_pass" /tr http://tsa.starfieldtech.com /td SHA256 /fd SHA256 dist\*.exe
 
 python zip_daemon.py
-python upload_assets.py
+# python upload_assets.py
