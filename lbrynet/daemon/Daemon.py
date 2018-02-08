@@ -206,7 +206,7 @@ class Daemon(AuthJSONRPCServer):
         self.connected_to_internet = True
         self.connection_status_code = None
         self.platform = None
-        self.current_db_revision = 5
+        self.current_db_revision = 6
         self.db_revision_file = conf.settings.get_db_revision_filename()
         self.session = None
         self._session_id = conf.settings.get_session_id()
@@ -245,7 +245,7 @@ class Daemon(AuthJSONRPCServer):
 
         yield self._initial_setup()
         yield threads.deferToThread(self._setup_data_directory)
-        # yield self._check_db_migration()
+        yield self._check_db_migration()
         yield self.storage.setup()
         yield self._get_session()
         yield self._check_wallet_locked()
