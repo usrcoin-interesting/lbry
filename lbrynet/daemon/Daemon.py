@@ -715,8 +715,6 @@ class Daemon(AuthJSONRPCServer):
         publisher = Publisher(self.session, self.lbry_file_manager, self.session.wallet,
                               certificate_id)
         parse_lbry_uri(name)
-        if bid <= 0.0:
-            raise Exception("Invalid bid")
         if not file_path:
             claim_out = yield publisher.publish_stream(name, bid, claim_dict, claim_address,
                                                        change_address)
@@ -1968,10 +1966,6 @@ class Daemon(AuthJSONRPCServer):
 
         if bid <= 0.0:
             raise Exception("Invalid bid")
-
-        if bid >= self.session.wallet.get_balance():
-            raise InsufficientFundsError('Insufficient funds. ' \
-                                         'Make sure you have enough LBC to deposit')
 
         metadata = metadata or {}
         if fee is not None:
